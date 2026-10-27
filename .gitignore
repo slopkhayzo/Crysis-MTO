@@ -1,0 +1,18 @@
+# Research material (reverse engineering, profiling runs and results, notes): kept local, never committed
+/research/
+
+# Build outputs and packages (packages go to the GitHub releases)
+/build/
+/dist/
+
+# Logs written by tests and runs
+*.log
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Editor and tool settings
+.vs/
+.vscode/
+.claude/settings.local.json
