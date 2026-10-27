@@ -95,6 +95,24 @@ std::wstring LogPath(const std::wstring& dir) {
     return absolute ? p : dir + L"\\" + p;
 }
 
+// The process's processor mask, logged: a launcher may have narrowed it (GOG's "Launch Crysis" shortcut starts the
+// 64-bit game on CPUs 1-7 on machines with more than 7). [Debug] ProcessAffinity (a test, hex, e.g. FE) sets it as such
+// a launcher would.
+void ProcessAffinity() {
+    DWORD_PTR process = 0, system = 0;
+    if (!GetProcessAffinityMask(GetCurrentProcess(), &process, &system)) return;
+    const std::wstring v = optiperf::ConfigString(L"Debug", L"ProcessAffinity", L"OPTIPERF_PROCESS_AFFINITY", L"");
+    const unsigned long long want = v.empty() ? 0 : wcstoull(v.c_str(), nullptr, 16) & system;
+    if (want && want != process && SetProcessAffinityMask(GetCurrentProcess(), DWORD_PTR(want))) {
+        optiperf::Log("the process's processor mask set to 0x%llX ([Debug] ProcessAffinity; it was 0x%llX, the system's "
+                      "0x%llX)",
+                      want, static_cast<unsigned long long>(process), static_cast<unsigned long long>(system));
+        return;
+    }
+    optiperf::Log("the process's processor mask: 0x%llX (the system's 0x%llX)%s", static_cast<unsigned long long>(process),
+                  static_cast<unsigned long long>(system), v.empty() ? "" : " ([Debug] ProcessAffinity not applied)");
+}
+
 // Only the first optiperf in a process works: a second copy (an ASI loader's from the game folder, besides the one the
 // development launcher injects first) would patch the same code again. A named event per process tells it so; it
 // stays off, and opens no log (OPTIPERF_LOG may name the first copy's).
@@ -124,6 +142,7 @@ void Attach(HMODULE self) {
     wchar_t exe[MAX_PATH];
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
     optiperf::Log("optiperf loaded into pid %lu (%ls) from %ls", GetCurrentProcessId(), exe, path);
+    ProcessAffinity();
     optiperf::Diag_Init();
     optiperf::Diag_SetExitCallback(ReportFinal);
     optiperf::CallTrace_Init();

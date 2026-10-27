@@ -616,7 +616,15 @@ struct State {
         bool set = false;
     } auxFlags;
     unsigned countAt[2] = {};  // the shader's and the texture's count, in their objects (their AddRef's code)
-    std::vector<std::pair<void*, int>> refs;  // this window's counted AddRef and Release calls taken, per object
+    // this window's counted AddRef and Release calls taken, per object: those still in the main thread's list, and
+    // (FlushThreadPresent) those sealed for the worker that it hasn't made yet. The lock guards both while the worker
+    // makes the sealed ones and the main thread goes on predicting answers from the objects' counts.
+    struct Ref {
+        void* obj;
+        int window, sealed;
+    };
+    std::vector<Ref> refs;
+    SRWLOCK refsLock = SRWLOCK_INIT;
     uint64_t refsDiffer = 0, releasesToZero = 0;
     std::vector<void*> blockVtable;  // the renderer's functions, for UnProjectFromScreen on the camera copy's block
     uint64_t unprojectJoins = 0;
@@ -850,11 +858,23 @@ void Seal() {
             return;
         }
     g.sealed.swap(g.calls);  // (empty since the last window's frame's end was made: the main thread goes on in `calls`)
+    AcquireSRWLockExclusive(&g.refsLock);  // (the counted references taken so far go with them: pending on the worker)
+    for (State::Ref& r : g.refs) {
+        r.sealed += r.window;
+        r.window = 0;
+    }
+    ReleaseSRWLockExclusive(&g.refsLock);
     if (FlushThread_Seal()) {
         ++g.seals;
         return;
     }
     g.sealed.swap(g.calls);
+    AcquireSRWLockExclusive(&g.refsLock);  // (not sealed after all: the join makes them)
+    for (State::Ref& r : g.refs) {
+        r.window += r.sealed;
+        r.sealed = 0;
+    }
+    ReleaseSRWLockExclusive(&g.refsLock);
 }
 template <Kind K>
 void Ints0Hook(void* r) {
@@ -1234,14 +1254,23 @@ uint32_t* AuxGetFlagsHook(void* aux, uint32_t* out) {
     Record(kAuxGetRenderFlags, aux).out[0] = *out;
     return out;
 }
+// The object's entry among this window's counted references (added at nothing pending); under refsLock.
+State::Ref& RefOf(void* obj) {
+    auto it = std::find_if(g.refs.begin(), g.refs.end(), [obj](const State::Ref& r) { return r.obj == obj; });
+    if (it == g.refs.end()) it = g.refs.insert(g.refs.end(), {obj, 0, 0});
+    return *it;
+}
+// A taken AddRef's or Release's answer: the object's count once the calls taken before it are made. Some may be sealed
+// for the worker, which makes them after the flush while the main thread goes on here (FlushThreadPresent): those it
+// has made are in the count, the others are pending in the entry.
 template <Kind K>
 int CountedAddRefHook(void* obj) {
     if (!FlushThread_Beside()) return Fn<CountedAddRefFn>(K)(obj);
-    auto it = std::find_if(g.refs.begin(), g.refs.end(),
-                           [obj](const std::pair<void*, int>& p) { return p.first == obj; });
-    if (it == g.refs.end()) it = g.refs.insert(g.refs.end(), {obj, 0});
     const unsigned at = g.countAt[K == kTextureAddRef];
-    const int v = *reinterpret_cast<const int*>(static_cast<const char*>(obj) + at) + it->second++;
+    AcquireSRWLockExclusive(&g.refsLock);
+    State::Ref& ref = RefOf(obj);
+    const int v = *reinterpret_cast<const int*>(static_cast<const char*>(obj) + at) + ref.sealed + ref.window++;
+    ReleaseSRWLockExclusive(&g.refsLock);
     Record(K, obj).out[0] = uint32_t(v);
     return v;
 }
@@ -1250,10 +1279,10 @@ int ShaderReleaseHook(void* obj) {
     const char* const s = static_cast<const char*>(obj);
     int v = -1;  // (not counted)
     if (!(*reinterpret_cast<const uint32_t*>(s + kShaderFlags) & kShaderUncounted)) {
-        auto it = std::find_if(g.refs.begin(), g.refs.end(),
-                               [obj](const std::pair<void*, int>& p) { return p.first == obj; });
-        if (it == g.refs.end()) it = g.refs.insert(g.refs.end(), {obj, 0});
-        v = *reinterpret_cast<const int*>(s + kShaderCount) + --it->second;
+        AcquireSRWLockExclusive(&g.refsLock);
+        State::Ref& ref = RefOf(obj);
+        v = *reinterpret_cast<const int*>(s + kShaderCount) + ref.sealed + --ref.window;
+        ReleaseSRWLockExclusive(&g.refsLock);
         if (v == 0) ++g.releasesToZero;  // (destroyed at the join)
     }
     Record(kShaderRelease, obj).out[0] = uint32_t(v);
@@ -2257,9 +2286,18 @@ void Make(const Call& c) {
         }
         case kShaderAddRef:
         case kTextureAddRef:
-        case kShaderRelease:  // (its answer beside the flush was predicted: the same as now?)
+        case kShaderRelease: {  // (its answer beside the flush was predicted: the same as now?)
+            // a sealed one, on the worker while the main thread may be predicting answers from the same count: made
+            // under the lock, and no longer pending once made (an uncounted shader's Release had no entry)
+            const bool sealed = OnFlushThread();
+            if (sealed) AcquireSRWLockExclusive(&g.refsLock);
             if (Fn<CountedAddRefFn>(c.kind)(r) != int(c.out[0])) ++g.refsDiffer;
+            if (sealed) {
+                if (c.kind != kShaderRelease || c.out[0] != ~0u) RefOf(r).sealed += c.kind == kShaderRelease ? 1 : -1;
+                ReleaseSRWLockExclusive(&g.refsLock);
+            }
             return;
+        }
         case kSetViewport: return Fn<SetViewportFn>(kSetViewport)(r, int(a[0]), int(a[1]), int(a[2]), int(a[3]));
         case kSetCamera:
             reinterpret_cast<SetCameraFn>(g.setCamera)(r, g_cameraVersion[a[0]]);

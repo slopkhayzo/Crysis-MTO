@@ -36,6 +36,7 @@
 
 #include <windows.h>
 #include <intrin.h>
+#include <tlhelp32.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -110,6 +111,10 @@ struct Stats {
     uint64_t joinWait = 0;                     // its wait there for the flush's end
     uint64_t joinedRunning = 0;                // joins that found the flush still running
     uint64_t joinsNextFlush = 0, joinsReport = 0, joinsQueue = 0, joinsPin = 0;
+    // where the two threads ran (group 0's logical processors): the main thread at each hand-off, the worker as it
+    // started the flush; the hand-offs where both were on one physical core; another processor than the time before
+    uint64_t placed = 0, sameCore = 0, workerMoved = 0, mainMoved = 0;
+    uint64_t mainOn[64] = {}, workerOn[64] = {};
 };
 
 struct State {
@@ -161,6 +166,18 @@ struct State {
     void (*after)(void*) = nullptr;
     void* afterCtx = nullptr;
     std::vector<uint32_t> joins;  // per gate slot
+    // the physical cores (each one's logical processors, group 0, and efficiency class: higher is faster), each
+    // processor's core (-1: not known) and the last-level caches' processors; where the main thread was at the last
+    // hand-off and the two threads the time before; FlushThreadPlacement=apart: the mask the process's other threads
+    // are kept to
+    std::vector<KAFFINITY> coreMasks;
+    std::vector<BYTE> coreClass;
+    std::vector<KAFFINITY> l3Masks;
+    int coreOf[64] = {};
+    volatile unsigned mainCpu = ~0u;
+    unsigned lastMain = ~0u, lastWorker = ~0u;
+    bool apart = false;
+    KAFFINITY othersMask = 0;
 #endif
     Stats st;
 };
@@ -220,6 +237,145 @@ void Name(HANDLE thread, DWORD id) {
     }
 }
 
+// the calling thread's logical processor in group 0 (~0u in another group)
+unsigned CurrentProcessor() {
+    PROCESSOR_NUMBER p = {};
+    GetCurrentProcessorNumberEx(&p);
+    return p.Group == 0 && p.Number < 64 ? unsigned(p.Number) : ~0u;
+}
+
+// the physical cores' logical processors and efficiency classes, and the last-level caches' processors (group 0), for
+// where the two threads run
+void ReadTopology() {
+    for (int& c : g.coreOf) c = -1;
+    DWORD bytes = 0;
+    GetLogicalProcessorInformationEx(RelationAll, nullptr, &bytes);
+    std::vector<char> buf(bytes);
+    if (!bytes || !GetLogicalProcessorInformationEx(
+                      RelationAll, reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buf.data()), &bytes))
+        return;
+    for (DWORD off = 0; off < bytes;) {
+        const auto* e = reinterpret_cast<const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buf.data() + off);
+        if (!e->Size) break;
+        if (e->Relationship == RelationProcessorCore && e->Processor.GroupCount && e->Processor.GroupMask[0].Group == 0) {
+            const KAFFINITY m = e->Processor.GroupMask[0].Mask;
+            for (int i = 0; i < 64; ++i)
+                if (m & (KAFFINITY(1) << i)) g.coreOf[i] = int(g.coreMasks.size());
+            g.coreMasks.push_back(m);
+            g.coreClass.push_back(e->Processor.EfficiencyClass);
+        } else if (e->Relationship == RelationCache && e->Cache.Level == 3 && e->Cache.GroupMask.Group == 0) {
+            g.l3Masks.push_back(e->Cache.GroupMask.Mask);
+        }
+        off += e->Size;
+    }
+}
+
+// on the worker as it starts a flush: where it is, against where the main thread was at the hand-off
+void CountPlacement() {
+    const unsigned w = CurrentProcessor(), m = g.mainCpu;
+    if (w >= 64 || m >= 64) return;
+    Stats& s = g.st;
+    ++s.placed;
+    ++s.mainOn[m];
+    ++s.workerOn[w];
+    if (g.coreOf[m] >= 0 && g.coreOf[m] == g.coreOf[w]) ++s.sameCore;
+    if (g.lastWorker < 64 && w != g.lastWorker) ++s.workerMoved;
+    if (g.lastMain < 64 && m != g.lastMain) ++s.mainMoved;
+    g.lastWorker = w;
+    g.lastMain = m;
+}
+
+// "processor:count" for each processor with a count
+void ListProcessors(const uint64_t (&on)[64], char* out, size_t size) {
+    size_t used = 0;
+    out[0] = 0;
+    for (int i = 0; i < 64; ++i) {
+        if (!on[i]) continue;
+        const int w = snprintf(out + used, size - used, "%s%d:%llu", used ? " " : "", i, on[i]);
+        if (w < 0 || size_t(w) >= size - used) break;
+        used += size_t(w);
+    }
+}
+
+// FlushThreadPlacement=apart: the process's other threads kept off the two threads' cores (at the start, then at each
+// report for the threads made since); how many were set
+int KeepOthersOff() {
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) return 0;
+    int set = 0;
+    THREADENTRY32 te = {};
+    te.dwSize = sizeof te;
+    const DWORD pid = GetCurrentProcessId(), worker = g.flushThread;
+    for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
+        if (te.th32OwnerProcessID != pid || te.th32ThreadID == g.mainThread || te.th32ThreadID == worker) continue;
+        if (HANDLE t = OpenThread(THREAD_SET_INFORMATION | THREAD_QUERY_INFORMATION, FALSE, te.th32ThreadID)) {
+            if (SetThreadAffinityMask(t, g.othersMask)) ++set;
+            CloseHandle(t);
+        }
+    }
+    CloseHandle(snap);
+    return set;
+}
+
+// FlushThreadPlacement=apart (a test), at the start on the main thread: it and the worker each on a physical core of
+// their own, the process's other threads on the rest. The two cores, among those whose processors are all in the
+// process's mask (a launcher may have narrowed it): of the most performant efficiency class (a hybrid part's
+// performance cores), within the last-level cache that holds most of those (one core complex of a part with several),
+// not processor 0's while others are left (it takes most interrupts), the last two. At least two cores must be left
+// for the other threads, or nothing is set.
+void Apart() {
+    DWORD_PTR process = 0, system = 0;
+    GetProcessAffinityMask(GetCurrentProcess(), &process, &system);
+    const KAFFINITY mask = KAFFINITY(process);
+    const auto whole = [&](size_t c) { return (g.coreMasks[c] & ~mask) == 0; };
+    BYTE best = 0;
+    for (size_t c = 0; c < g.coreMasks.size(); ++c)
+        if (whole(c)) best = std::max(best, g.coreClass[c]);
+    std::vector<size_t> cand;
+    for (size_t c = 0; c < g.coreMasks.size(); ++c)
+        if (whole(c) && g.coreClass[c] == best) cand.push_back(c);
+    KAFFINITY cache = 0;
+    size_t most = 0;
+    for (const KAFFINITY l3 : g.l3Masks) {
+        const auto in = [&](size_t c) { return (g.coreMasks[c] & ~l3) == 0; };
+        const size_t n = size_t(std::count_if(cand.begin(), cand.end(), in));
+        if (n > most) {
+            most = n;
+            cache = l3;
+        }
+    }
+    if (most >= 2)
+        cand.erase(std::remove_if(cand.begin(), cand.end(), [&](size_t c) { return (g.coreMasks[c] & ~cache) != 0; }),
+                   cand.end());
+    if (cand.size() > 2 && g.coreOf[0] >= 0)
+        cand.erase(std::remove(cand.begin(), cand.end(), size_t(g.coreOf[0])), cand.end());
+    const KAFFINITY mainMask = cand.size() >= 2 ? g.coreMasks[cand[cand.size() - 1]] : 0;
+    const KAFFINITY workerMask = cand.size() >= 2 ? g.coreMasks[cand[cand.size() - 2]] : 0;
+    g.othersMask = mask & ~(mainMask | workerMask);
+    int otherCores = 0;
+    for (const KAFFINITY m : g.coreMasks)
+        if (m & g.othersMask) ++otherCores;
+    if (cand.size() < 2 || otherCores < 2) {
+        Log("flush thread: placement apart (FlushThreadPlacement) not applied: the process's mask 0x%llX has %zu whole "
+            "cores to choose from (efficiency class %u) and would leave %d for the other threads",
+            static_cast<unsigned long long>(process), cand.size(), unsigned(best), otherCores);
+        g.apart = false;
+        return;
+    }
+    const size_t mainCore = cand[cand.size() - 1], workerCore = cand[cand.size() - 2];
+    const bool mainSet = SetThreadAffinityMask(GetCurrentThread(), mainMask) != 0;
+    const bool workerSet = SetThreadAffinityMask(g.thread, workerMask) != 0;
+    const int others = KeepOthersOff();
+    Log("flush thread: placement apart (FlushThreadPlacement, a test): the main thread on core %zu (processors 0x%llX%s), "
+        "the worker on core %zu (0x%llX%s), chosen from %zu cores of efficiency class %u in a last-level cache of "
+        "0x%llX; the process's %d other threads on 0x%llX, %d cores (threads made later get the process's mask 0x%llX "
+        "until the next report sets theirs)",
+        mainCore, static_cast<unsigned long long>(mainMask), mainSet ? "" : ", not set", workerCore,
+        static_cast<unsigned long long>(workerMask), workerSet ? "" : ", not set", cand.size(), unsigned(best),
+        static_cast<unsigned long long>(cache), others, static_cast<unsigned long long>(g.othersMask), otherCores,
+        static_cast<unsigned long long>(process));
+}
+
 void WatchMain();
 
 // FlushThreadPresent=on, on the worker right after the flush: the frame's end the main thread seals at its EndFrame,
@@ -254,6 +410,7 @@ DWORD WINAPI Worker(void*) {
         }
         if (w != WAIT_OBJECT_0) return 1;
         g.tStart = __rdtsc();
+        CountPlacement();
         _mm_setcsr(g.mxcsr);
         if (g.seedAt >= 0) Seed() = g.seed;
         CallTrace_SetPhase(g.phase);
@@ -571,6 +728,8 @@ void Start() {
         g.mode == FMode::Overlap ? "goes on until its first renderer call" : "waits",
         g.seedAt >= 0 ? "goes with the flush (msvcr80's per-thread block)"
                       : "stays the worker's own (the renderer's rand is not the expected code)");
+    ReadTopology();
+    if (g.apart) Apart();
 #endif
 }
 
@@ -598,6 +757,11 @@ void FlushThread_Install(const wchar_t* moduleName, char* rendererBase, char* en
                                       L"OPTIPERF_SHADOW_PREPASS_FLUSH_THREAD_PRESENT", L"off")
                              .c_str(),
                          L"on") == 0;
+    g.apart = g.mode != FMode::Main &&
+              _wcsicmp(ConfigString(L"ShadowPrepass", L"FlushThreadPlacement",
+                                    L"OPTIPERF_SHADOW_PREPASS_FLUSH_THREAD_PLACEMENT", L"default")
+                           .c_str(),
+                       L"apart") == 0;
 #endif
 #ifdef _WIN64
     if (g.mode == FMode::Overlap) {
@@ -756,6 +920,7 @@ void FlushThread_Run(void (*fn)(void*), void* ctx, void (*after)(void*), void* a
         g.phase = CallTrace_Phase();
         if (g.seedAt >= 0) g.seed = Seed();
         g.tGo = __rdtsc();
+        g.mainCpu = CurrentProcessor();
         g.lastHandOff = GetTickCount64();
         g.ended = false;
         g.flushEnded = false;
@@ -808,6 +973,21 @@ void FlushThread_Report(const char* when) {
         s.flushes, double(s.flushCycles) / 3.0e6 / n, double(s.startCycles) / 3.0e3 / n, double(s.maxStart) / 3.0e3,
         double(s.backCycles) / 3.0e3 / n, double(s.maxBack) / 3.0e3, s.priority, s.mxcsrChanged, s.stuck, s.sent);
 #ifdef _WIN64
+    if (g.thread && s.placed) {  // (where the two threads ran at the hand-offs)
+        char mains[600] = "", workers[600] = "";
+        ListProcessors(s.mainOn, mains, sizeof mains);
+        ListProcessors(s.workerOn, workers, sizeof workers);
+        DWORD_PTR process = 0, system = 0;
+        GetProcessAffinityMask(GetCurrentProcess(), &process, &system);
+        Log("flush thread [%s]: placement %s | %zu physical cores, the process's mask 0x%llX | the worker started on the "
+            "main thread's core at %llu of %llu hand-offs (%.1f %%), on another processor than the time before %llu "
+            "times (the main thread %llu) | the main thread's processors at the hand-offs (processor:count) %s; the "
+            "worker's %s",
+            when, g.apart ? "apart" : "default", g.coreMasks.size(), static_cast<unsigned long long>(process),
+            s.sameCore, s.placed, 100.0 * double(s.sameCore) / double(s.placed), s.workerMoved, s.mainMoved, mains,
+            workers);
+        if (g.apart) KeepOthersOff();  // (threads made since the start, or the last report)
+    }
     if (g.mode != FMode::Overlap) return;
     // the calls that joined, most first
     std::vector<std::pair<uint32_t, unsigned>> top;
