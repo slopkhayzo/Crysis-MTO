@@ -9,6 +9,7 @@ It ships as an ASI plugin, `optiperf.asi`, loaded by [Ultimate ASI Loader](https
 | | Game builds | Effect (measured) |
 |---|---|---|
 | **Render thread** | 64-bit, DX10 | The renderer's main pass, the HUD and the present run on their own thread while the game works on its next frame. The opening dawn scene went from ~100 to 160–170 fps. |
+| **Thread placement** | 64-bit, DX10 | The game's main thread and the render thread each get a physical core of their own, and the game's other threads are kept off those two. Left to Windows, both moved at most frames and often shared a core. +3 to +18 % fps on eight levels, about +9 % on average. |
 | **Particle fix** | all | Replaces a quadratic search in the renderer's particle batching. The ice benchmark: +27–31 % average fps, minimums 2.3–5.6× higher. |
 | **Allocator** (mimalloc) | all | Removes the engine allocator's global lock, and makes the 64-bit game run (it crashed at level load). |
 
@@ -16,7 +17,7 @@ Measured on 8 cores of an i9-13900K (in a VM) with an RTX 4090, at 1080p and Ver
 
 ## Status
 
-The engine fixes and the render thread are done. The render thread is on by default in `optiperf.ini`. Next is the main thread's own work (the scene traversal, the game's update), which now sets the frame rate.
+The engine fixes, the render thread and the thread placement are done, and on by default in `optiperf.ini`. Next is the main thread's own work (the scene traversal, the game's update), which now sets the frame rate.
 
 ## Install
 
@@ -28,7 +29,7 @@ Needs Visual Studio 2022 or later with the C++ x86/x64 tools (CMake and Ninja co
 
 ```powershell
 .\build.ps1 -Arch x86,x64        # build\x86, build\x64: optiperf.asi, optiperf.ini, the dev launcher, the tests
-.\package.ps1 -Version 0.4.0     # the Release build, packaged as dist\optiperf-0.4.0.zip
+.\package.ps1 -Version 0.5.0     # the Release build, packaged as dist\optiperf-0.5.0.zip
 ```
 
 [src/README.md](src/README.md) describes the code, the settings and the tests.

@@ -16,8 +16,10 @@ WHAT IT DOES
 
 * Render thread (64-bit game with DX10 only): the renderer's main pass, then the HUD and the frame's present, run on
   a thread of their own while the game already works on its next frame beside them. In play this took the opening
-  dawn scene from ~100 fps to 160-170 fps, with later scenes up to ~300 fps. On the 32-bit game or DX9 it stays off
-  by itself, and the other fixes still apply.
+  dawn scene from ~100 fps to 160-170 fps, with later scenes up to ~300 fps. With four CPU cores or more, the game's
+  main thread and the render thread also get a core each, and the game's other threads are kept off those two:
+  a further 3-18% fps in the benchmarks. On the 32-bit game or DX9 it stays off by itself, and the other fixes still
+  apply.
 
 * A log file (optiperf.log) that records what was patched and, if the game crashes or shows an error, where.
 
@@ -40,7 +42,8 @@ INSTALL
 
 To check it works, look at Bin32\optiperf.log (or Bin64\optiperf.log) after starting the game: it should say
 "particle batch fix installed" and "allocator replaced by mimalloc"; with the 64-bit game in DX10, also
-"flush thread: overlap" and, once a level is running, "the outer flush runs on a worker".
+"flush thread: overlap" and, once a level is running, "the outer flush runs on a worker" and (the placement)
+"the main thread on core".
 
 
 UNINSTALL
@@ -51,9 +54,10 @@ Delete version.dll, optiperf.asi, optiperf.ini and optiperf.log from Bin32 and B
 SETTINGS (optiperf.ini)
 
 Each fix can be turned off on its own ([ParticleBatch] Mode=off, [Allocator] Mode=off; the render thread with
-[ShadowPrepass] FlushThread=main, or everything it prepares with [ShadowPrepass] Mode=off). Every fix first checks
-that the game code it changes is exactly what it expects; if not (another mod changed it, a different game
-version), that fix stays off and optiperf.log says why. The game itself always runs.
+[ShadowPrepass] FlushThread=main, or everything it prepares with [ShadowPrepass] Mode=off; the two threads' own
+cores with [ShadowPrepass] FlushThreadPlacement=default). Every fix first checks that the game code it changes is
+exactly what it expects; if not (another mod changed it, a different game version), that fix stays off and
+optiperf.log says why. The game itself always runs.
 
 
 COMPATIBILITY

@@ -15,11 +15,12 @@
 //                 the present (EndFrame) are sealed there, and the worker makes them right after the flush, while the
 //                 main thread goes on; a join then waits for them too, letting messages sent to the main thread through
 //                 (DXGI's, from a present away from the window's thread)
-//                 FlushThreadPlacement = default | apart    (env OPTIPERF_SHADOW_PREPASS_FLUSH_THREAD_PLACEMENT; a test):
-//                 with worker or overlap, default leaves the two threads where the OS puts them; apart gives the main
-//                 thread and the worker a physical core each and keeps the process's other threads off both (the
-//                 cores: the most performant class, one last-level cache, not processor 0's, two left for the rest).
-//                 Either way the report says where the two ran at the hand-offs (on one physical core, or apart).
+//                 FlushThreadPlacement = default (default) | apart
+//                 (env OPTIPERF_SHADOW_PREPASS_FLUSH_THREAD_PLACEMENT): with worker or overlap, default leaves the two
+//                 threads where the OS puts them; apart gives the main thread and the worker a physical core each and
+//                 keeps the process's other threads off both (the cores: the most performant class, one last-level
+//                 cache, not processor 0's, two left for the rest). Either way the report says where the two ran at the
+//                 hand-offs (on one physical core, or apart).
 
 namespace optiperf {
 

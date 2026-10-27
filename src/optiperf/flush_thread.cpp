@@ -317,7 +317,7 @@ int KeepOthersOff() {
     return set;
 }
 
-// FlushThreadPlacement=apart (a test), at the start on the main thread: it and the worker each on a physical core of
+// FlushThreadPlacement=apart, at the start on the main thread: it and the worker each on a physical core of
 // their own, the process's other threads on the rest. The two cores, among those whose processors are all in the
 // process's mask (a launcher may have narrowed it): of the most performant efficiency class (a hybrid part's
 // performance cores), within the last-level cache that holds most of those (one core complex of a part with several),
@@ -366,7 +366,7 @@ void Apart() {
     const bool mainSet = SetThreadAffinityMask(GetCurrentThread(), mainMask) != 0;
     const bool workerSet = SetThreadAffinityMask(g.thread, workerMask) != 0;
     const int others = KeepOthersOff();
-    Log("flush thread: placement apart (FlushThreadPlacement, a test): the main thread on core %zu (processors 0x%llX%s), "
+    Log("flush thread: placement apart (FlushThreadPlacement): the main thread on core %zu (processors 0x%llX%s), "
         "the worker on core %zu (0x%llX%s), chosen from %zu cores of efficiency class %u in a last-level cache of "
         "0x%llX; the process's %d other threads on 0x%llX, %d cores (threads made later get the process's mask 0x%llX "
         "until the next report sets theirs)",
