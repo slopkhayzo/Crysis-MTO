@@ -7,5 +7,7 @@ namespace optiperf {
 void LogInit(const wchar_t* path);
 void Log(const char* fmt, ...);
 void LogClose();
+// The log file's path as LogInit got it (empty if none): diagnostics write their own files next to it.
+const wchar_t* LogPath();
 
 }  // namespace optiperf

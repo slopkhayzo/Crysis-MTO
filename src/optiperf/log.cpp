@@ -4,6 +4,7 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <cwchar>
 
 namespace optiperf {
 namespace {
@@ -12,14 +13,18 @@ HANDLE g_file = INVALID_HANDLE_VALUE;
 CRITICAL_SECTION g_lock;
 bool g_lockInit = false;
 LARGE_INTEGER g_t0, g_freq;
+wchar_t g_path[MAX_PATH * 2] = L"";
 
 }  // namespace
+
+const wchar_t* LogPath() { return g_path; }
 
 void LogInit(const wchar_t* path) {
     if (!g_lockInit) {
         InitializeCriticalSection(&g_lock);
         g_lockInit = true;
     }
+    if (path && *path) wcsncpy_s(g_path, path, _TRUNCATE);
     QueryPerformanceFrequency(&g_freq);
     QueryPerformanceCounter(&g_t0);
     // write-through: the log is written rarely, and it must survive a hang or a hard reset of the machine

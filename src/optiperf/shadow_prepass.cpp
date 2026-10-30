@@ -59,6 +59,7 @@
 #include "flush_thread.h"
 #include "frame_phases.h"
 #include "producer_timing.h"
+#include "traversal_census.h"
 #include "hooks.h"
 #include "light_snapshot.h"
 #include "log.h"
@@ -1183,6 +1184,7 @@ void EndEf3DHook(char* r, int flags) {
     const bool outer = level == 1 && GetCurrentThreadId() == g.mainThread;
     uint64_t t0 = 0, t1 = 0;
     if (outer) {
+        TraversalCensus_FlushEntry();    // (a diagnostic: its census frames end before this, counted here)
         FlushThread_OnEntry();           // (the flush's thread, known to the hand-off below)
         TraversalRecord_OnFlushEntry(r);  // (verify: the traversal's producer calls replayed and compared)
         Allocator_BeginPins();           // (FlushThread=overlap: what the parts will write after the flush, kept)
@@ -1505,6 +1507,7 @@ void ShadowPrepass_OnModuleLoaded(const wchar_t* baseName, char* base, size_t si
     Census_Install(baseName, base, size, g.t);
     FramePhases_Install(baseName, g.t.system);
     ProducerTiming_Install(baseName, base);
+    TraversalCensus_Install(baseName, g.t);
 #endif
 }
 
@@ -1554,6 +1557,7 @@ void ShadowPrepass_Report(const char* when) {
     FramePhases_Report(when);
     ProducerTiming_Report(when);
     TraversalRecord_Report(when);
+    TraversalCensus_Report(when);
 }
 
 }  // namespace optiperf

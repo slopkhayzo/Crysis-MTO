@@ -12,6 +12,9 @@ void Allocator_Report(const char* when);
 // user start and its usable size. False for an address outside mimalloc's blocks, or with the tags off. A freed
 // block's "code" is mimalloc's free-list link (a heap address), which the caller can tell from code.
 bool Allocator_TracksOwners();
+// x64: the address space reserved below 4 GB for mimalloc (committed on demand), arena by arena; for the diagnostics
+// that watch the engine's memory (the traversal census)
+void Allocator_ForEachArena(void (*fn)(char* base, size_t size, void* ctx), void* ctx);
 bool Allocator_OwnerOf(const void* p, const void** site, const char** start, size_t* size);
 // (allocator_owners.cpp) the mimalloc block p points into, its start and size
 bool Allocator_BlockOf(const void* p, char** block, size_t* size);

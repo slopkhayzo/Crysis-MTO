@@ -71,6 +71,7 @@ set(OPTIPERF_CORE
   optiperf/shadow_prepass.cpp
   optiperf/skin_prepass.cpp
   optiperf/sys_snapshot.cpp
+  optiperf/traversal_census.cpp
   optiperf/traversal_record.cpp
 )
 

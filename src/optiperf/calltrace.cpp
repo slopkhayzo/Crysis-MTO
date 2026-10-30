@@ -15,6 +15,9 @@
 //         Timing   = 1 (default on x86; x64 counts only)                              (env OPTIPERF_TRACE_TIMING)
 //         MarkFile = file whose size is logged with every snapshot; run_bench.ps1 passes the timedemo log, so the
 //                    report can tell the timedemo runs apart                          (env OPTIPERF_TRACE_MARK)
+//         InternalSites = (empty) | one traced DLL's name: that module's calls from itself are counted per thread and
+//                    call site too, like calls from elsewhere, for what its own code reaches through its own vtables
+//                    (slower)                                                         (env OPTIPERF_TRACE_INTERNAL_SITES)
 //
 // Output files (TSV, next to optiperf.log):
 //   optiperf_trace_slots.tsv    one row per hooked slot: id, module, base, class (mangled), subobject offset,
@@ -116,7 +119,7 @@ struct State {
     bool enabled = false, all = false, renderer = false, timing = false;
     NtQueryInformationThreadFn queryThread = nullptr;
     std::vector<std::wstring> modules;
-    std::wstring dir, mark;
+    std::wstring dir, mark, internalSites;
     char* thunks = nullptr;
     size_t committed = 0, committedCounters = 0;
     volatile LONG slotCount = 0;
@@ -574,7 +577,8 @@ void HookModule(const wchar_t* name, char* base) {
         if (!ok || !VirtualProtect(v.vtable, v.slots * sizeof(void*), PAGE_READWRITE, &old)) continue;
         for (uint32_t k = 0; k < v.slots; ++k) {
             const uint32_t id = first + k;
-            WriteThunk(id, v.vtable[k], base, size);
+            // (a range of no bytes: every return address is outside it, so every call counts per call site)
+            WriteThunk(id, v.vtable[k], base, _wcsicmp(name, g.internalSites.c_str()) == 0 ? 0 : size);
             if (g.slotsFile)
                 fprintf(g.slotsFile, "%u\t%ls\t0x%llX\t%s\t%u\t0x%X\t%u\t0x%X\r\n", id, name,
                         (unsigned long long)uintptr_t(base), v.mangled, v.offset,
@@ -619,6 +623,7 @@ void CallTrace_Init() {
     g.timing = ConfigString(L"Trace", L"Timing", L"OPTIPERF_TRACE_TIMING", L"1") != L"0";
 #endif
     g.mark = ConfigString(L"Trace", L"MarkFile", L"OPTIPERF_TRACE_MARK", L"");
+    g.internalSites = ConfigString(L"Trace", L"InternalSites", L"OPTIPERF_TRACE_INTERNAL_SITES", L"");
     std::wstring log = ConfigString(L"Log", L"File", L"OPTIPERF_LOG", L"");
     const bool absolute = log.size() > 1 && (log[1] == L':' || (log[0] == L'\\' && log[1] == L'\\'));
     g.dir = absolute && log.find_last_of(L'\\') != std::wstring::npos ? log.substr(0, log.find_last_of(L'\\')) : PluginDir();

@@ -55,11 +55,13 @@ Needs Visual Studio 2022+ with the C++ x86/x64 tools (CMake and Ninja come with 
 | `[Debug] NoDialogs` | log and auto-answer error boxes (set by `run_bench.ps1`) | `OPTIPERF_NO_DIALOGS` |
 | `[Debug] FramePhases` | `off` · `on` (x64, a diagnostic: the main thread's frame timed by phase, and marked in call traces) | `OPTIPERF_FRAME_PHASES` |
 | `[Debug] ProducerTiming` | `off` · `on` (x64, a diagnostic: the main thread's calls into the renderer's producer methods timed, per frame phase with `FramePhases=on`; not with the call tracer nor `FlushThread=overlap`) | `OPTIPERF_PRODUCER_TIMING` |
+| `[Debug] TraversalCensus` | `off` (default) · `casters` · `fields` · `particles` (x64, a diagnostic for moving work off the main thread: on a few frames, what the main thread reads and writes of the engine's memory in the 3D engine's shadow casters' walk and in the rest of its scene drawing, page by page with the code and call chain, into `traversal_census.tsv` next to the log; `TraversalCensusEvery` (400), `TraversalCensusMax` (3); needs `[Allocator] Owners=on`; run with `FlushThreadRecord=off` and `FlushThreadPresent=off`) | `OPTIPERF_TRAVERSAL_CENSUS`, `_EVERY`, `_MAX` |
 | `[Debug] ProcessAffinity` | empty (default: the mask is left as the launcher set it, and logged) · a hex mask, e.g. `FE` (a test: the process's processors set at the plugin's start, as GOG's "Launch Crysis" shortcut sets them) | `OPTIPERF_PROCESS_AFFINITY` |
 | `[Log] File` | | `OPTIPERF_LOG` |
 | `[Trace] Modules` | empty (off) · `renderer` · `all` · DLL list | `OPTIPERF_TRACE` |
 | `[Trace] Timing` | `1` (x86) · `0` | `OPTIPERF_TRACE_TIMING` |
 | `[Trace] MarkFile` | file whose size each snapshot records (`run_bench.ps1` passes the timedemo log) | `OPTIPERF_TRACE_MARK` |
+| `[Trace] InternalSites` | empty · one traced DLL's name: its calls from itself are counted per call site too (slower) | `OPTIPERF_TRACE_INTERNAL_SITES` |
 | `[ShadowPrepass] Mode` | `off` · `on` · `verify` (on, plus a check of every caster call's inputs) · `compare` (renders twice, compares outputs) | `OPTIPERF_SHADOW_PREPASS` |
 | `[ShadowPrepass] At` | `flush` (before the flush: the goal) · `shadows` (right before the shadow maps, for comparison) | `OPTIPERF_SHADOW_PREPASS_AT` |
 | `[ShadowPrepass] Reflections` | `off` · `observe` (log only) · `on` · `verify` (on, plus a check of each replayed reflection's inputs); needs `Mode` other than `off` | `OPTIPERF_SHADOW_PREPASS_REFLECTIONS` |

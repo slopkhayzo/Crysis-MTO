@@ -32,6 +32,7 @@
 #include <mimalloc.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <iterator>
@@ -79,6 +80,16 @@ constexpr const char* kGetMemSizePattern = "8B 44 24 04 8B 40 FC 83 C0 04 C3";
 // Reserves up to `wantBytes` of free address space below 4 GB for mimalloc: the largest free regions first, each taken
 // from its top end (the OS hands out memory bottom-up in this process, so others keep the low parts). Deterministic:
 // one pass over the address map, explicit addresses. Returns the number of bytes reserved.
+// The arenas reserved, for the diagnostics that watch the engine's memory (append-only: a refill may add one while a
+// reader walks them).
+constexpr int kMaxArenas = 64;
+struct Arena {
+    char* base;
+    size_t size;
+};
+Arena g_arenas[kMaxArenas];
+std::atomic<int> g_arenaCount{0};
+
 size_t ReserveLowArenas(size_t wantBytes) {
     constexpr uintptr_t kLow = 0x10000000, kHigh = uintptr_t(1) << 32;
     constexpr size_t kAlign = size_t(32) << 20, kMinChunk = size_t(128) << 20;  // mimalloc segment alignment on x64
@@ -111,6 +122,11 @@ size_t ReserveLowArenas(size_t wantBytes) {
             continue;
         }
         Log("allocator: %zu MB reserved below 4 GB at 0x%p", take >> 20, p);
+        const int n = g_arenaCount.load(std::memory_order_relaxed);
+        if (n < kMaxArenas) {
+            g_arenas[n] = {static_cast<char*>(p), take};
+            g_arenaCount.store(n + 1, std::memory_order_release);
+        }
         total += take;
         if (total >= wantBytes) break;
     }
@@ -376,6 +392,16 @@ void Allocator_OnModuleLoaded(const wchar_t* baseName, char* base, size_t /*size
 }
 
 bool Allocator_TracksOwners() { return g_owners; }
+
+void Allocator_ForEachArena(void (*fn)(char* base, size_t size, void* ctx), void* ctx) {
+#ifdef _WIN64
+    const int n = g_arenaCount.load(std::memory_order_acquire);
+    for (int i = 0; i < n; ++i) fn(g_arenas[i].base, g_arenas[i].size, ctx);
+#else
+    (void)fn;
+    (void)ctx;
+#endif
+}
 
 bool Allocator_OwnerOf(const void* p, const void** site, const char** start, size_t* size) {
 #ifdef _WIN64
