@@ -35,10 +35,10 @@ add_library(minhook_static STATIC
 target_include_directories(minhook_static PUBLIC ${minhook_SOURCE_DIR}/include)
 
 # --- optiperf -------------------------------------------------------------------------------------------------------
-# x64 needs one assembly stub (the call tracer's entry; x86 uses inline assembly)
+# x64 needs two assembly stubs (the call tracer's entry, x86 using inline assembly; the particle update's serial calls)
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
   enable_language(ASM_MASM)
-  set(OPTIPERF_ASM optiperf/calltrace_x64.asm)
+  set(OPTIPERF_ASM optiperf/calltrace_x64.asm optiperf/particle_update_x64.asm)
 endif()
 set(OPTIPERF_CXX_FLAGS $<$<COMPILE_LANGUAGE:CXX>:/W4 /permissive- /utf-8 /EHsc>)
 set(OPTIPERF_CORE
@@ -64,6 +64,7 @@ set(OPTIPERF_CORE
   optiperf/scan.cpp
   optiperf/particle_batch.cpp
   optiperf/particle_prepass.cpp
+  optiperf/particle_update.cpp
   optiperf/producer_timing.cpp
   optiperf/reflection_prepass.cpp
   optiperf/render_gate.cpp

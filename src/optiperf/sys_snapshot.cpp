@@ -202,7 +202,7 @@ void GoneStale() {
 bool OnMain() {
     const DWORD t = GetCurrentThreadId();
     if (t == g.mainThread || t == FlushThread()) return true;
-    g.otherThread.fetch_add(1, std::memory_order_relaxed);
+    if (!g_vtableCountingOff) g.otherThread.fetch_add(1, std::memory_order_relaxed);  // (not in a particle batch)
     return false;
 }
 

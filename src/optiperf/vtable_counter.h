@@ -13,6 +13,11 @@
 
 namespace optiperf {
 
+// While set (a batch of the particle emitters' updates on several threads: particle_update.cpp), the counting thunks
+// count nothing: every thread of the batch calls the timer through them, and their locked increments of one counter
+// would be contended. The counts are diagnostics (the markers still work).
+inline volatile uint8_t g_vtableCountingOff = 0;
+
 // Counts the calls made through an object's vtable while it is active: the object's vtable pointer is swapped for a
 // copy whose slots go through counting thunks, which count calls from inside the module and from elsewhere apart; a
 // slot's thunk can be pointed at a function of ours instead of the original, or made to set a marker first (calls
@@ -27,23 +32,28 @@ public:
         while (n < maxSlots && IsInCode(moduleBase, static_cast<const char*>(CallTrace_Original(vt[n])), 1)) ++n;
         if (n == 0) return false;
         const size_t code = (size_t(n) * kThunk + 0xFFF) & ~size_t(0xFFF);
-        const size_t data = 32 + size_t(n) * 32 + size_t(n + 1) * 8;
+        const size_t data = 48 + size_t(n) * 32 + size_t(n + 1) * 8;
         auto* mem = static_cast<uint8_t*>(VirtualAlloc(nullptr, code + data, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
         if (!mem) return false;
-        // [0] module base, [1] size, [2] the marker, [3] the thread whose calls mark (its low half; 0: any thread's)
+        // [0] module base, [1] size, [2] the marker, [3] the thread whose calls mark (its low half; 0: any thread's),
+        // [4] where the flag that turns counting off is (g_vtableCountingOff)
         uint64_t* base = reinterpret_cast<uint64_t*>(mem + code);
         base[0] = reinterpret_cast<uint64_t>(moduleBase);
         base[1] = moduleSize;
         base[2] = 0;
         base[3] = 0;
-        uint64_t* slot = base + 4;  // per slot: target, calls from inside, calls from outside, target after the marker
+        base[4] = reinterpret_cast<uint64_t>(&g_vtableCountingOff);
+        uint64_t* slot = base + 6;  // per slot: target, calls from inside, calls from outside, target after the marker
         void** copy = reinterpret_cast<void**>(slot + size_t(n) * 4);  // [-1]: the RTTI locator, then the slots
         copy[0] = vt[-1];
         for (int i = 0; i < n; ++i) {
             uint8_t* t = mem + size_t(i) * kThunk;
             uint64_t* s = slot + size_t(i) * 4;
             s[0] = s[3] = reinterpret_cast<uint64_t>(vt[i]);
-            static const uint8_t kCode[81] = {
+            static const uint8_t kCode[93] = {
+                0x48, 0x8B, 0x05, 0, 0, 0, 0,              // mov rax, [rip+flag's address]
+                0x80, 0x38, 0x00,                          // cmp byte [rax], 0
+                0x75, 0x2A,                                // jne on, uncounted (to the second jmp below)
                 0x48, 0x8B, 0x04, 0x24,                    // mov rax, [rsp]: the return address
                 0x48, 0x2B, 0x05, 0, 0, 0, 0,              // sub rax, [rip+base]
                 0x48, 0x3B, 0x05, 0, 0, 0, 0,              // cmp rax, [rip+size]
@@ -52,7 +62,7 @@ public:
                 0xFF, 0x25, 0, 0, 0, 0,                    // jmp [rip+target]
                 0xF0, 0x48, 0xFF, 0x05, 0, 0, 0, 0,        // outside: lock inc qword [rip+outside]
                 0xFF, 0x25, 0, 0, 0, 0,                    // jmp [rip+target]
-                0x8B, 0x05, 0, 0, 0, 0,                    // +48, a marked slot's target: mov eax, [rip+mark thread]
+                0x8B, 0x05, 0, 0, 0, 0,                    // +60, a marked slot's target: mov eax, [rip+mark thread]
                 0x85, 0xC0,                                // test eax, eax
                 0x74, 0x0A,                                // jz mark (any thread's call marks)
                 0x65, 0x3B, 0x04, 0x25, 0x48, 0, 0, 0,     // cmp eax, gs:[0x48]: the calling thread's id (the TEB's)
@@ -60,15 +70,16 @@ public:
                 0xC6, 0x05, 0, 0, 0, 0, 0x01,              // mark: mov byte [rip+marker], 1
                 0xFF, 0x25, 0, 0, 0, 0};                   // on: jmp [rip+target after the marker]
             std::memcpy(t, kCode, sizeof kCode);
-            Rel(t, 7, 11, &base[0]);
-            Rel(t, 14, 18, &base[1]);
-            Rel(t, 24, 28, &s[1]);
-            Rel(t, 30, 34, &s[0]);
-            Rel(t, 38, 42, &s[2]);
-            Rel(t, 44, 48, &s[0]);
-            Rel(t, 50, 54, &base[3]);
-            Rel(t, 70, 75, &base[2]);
-            Rel(t, 77, 81, &s[3]);
+            Rel(t, 3, 7, &base[4]);
+            Rel(t, 19, 23, &base[0]);
+            Rel(t, 26, 30, &base[1]);
+            Rel(t, 36, 40, &s[1]);
+            Rel(t, 42, 46, &s[0]);
+            Rel(t, 50, 54, &s[2]);
+            Rel(t, 56, 60, &s[0]);
+            Rel(t, 62, 66, &base[3]);
+            Rel(t, 82, 87, &base[2]);
+            Rel(t, 89, 93, &s[3]);
             copy[1 + i] = t;
         }
         DWORD old;
@@ -96,7 +107,7 @@ public:
     void* Original(int i) const { return original_[i]; }
     void SetTarget(int i, void* fn) { slots_[size_t(i) * 4] = slots_[size_t(i) * 4 + 3] = reinterpret_cast<uint64_t>(fn); }
     // Calls through slot i set the marker before going on to its target (after SetTarget, if any).
-    void Mark(int i) { slots_[size_t(i) * 4] = reinterpret_cast<uint64_t>(thunks_ + size_t(i) * kThunk + 48); }
+    void Mark(int i) { slots_[size_t(i) * 4] = reinterpret_cast<uint64_t>(thunks_ + size_t(i) * kThunk + 60); }
     bool Marked() const { return marker_ && *marker_ != 0; }
     void ClearMarker() {
         if (marker_) *marker_ = 0;

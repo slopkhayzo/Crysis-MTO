@@ -59,6 +59,9 @@ bool FlushThread_Seal();
 void FlushThread_WatchWindowProc(void* proc);
 // When the last join of a flush beside the main thread began (the time stamp counter's; 0: none yet).
 unsigned long long FlushThread_JoinStartedAt();
+// FlushThreadPlacement=apart, once applied (the first outer flush): the processors the process's other threads are kept
+// on (group 0), else 0.
+unsigned long long FlushThread_OthersMask();
 
 // The outer flush, called on the main thread: fn(ctx) on the flush's thread, inside the call tracer's flush mark, then
 // after(afterCtx) on the main thread. With main and worker it returns when both are done. With overlap it returns

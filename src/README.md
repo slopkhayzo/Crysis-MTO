@@ -48,6 +48,9 @@ Needs Visual Studio 2022+ with the C++ x86/x64 tools (CMake and Ninja come with 
 | Key | Values | Environment variable |
 |---|---|---|
 | `[ParticleBatch] Mode` | `fast` · `verify` · `off` | `OPTIPERF_PARTICLE_BATCH` |
+| `[ParticleUpdate] Mode` | `off` (default) · `on` (x64: the 3D engine's particle emitters updated at once by worker threads and the main thread, at the particle manager's first update call; its liveness checks and octree registrations go on in its order; the sound system, physical entities' creation and changes, ray tests, an emitter's first vis-area lookup, shared meshes' and characters' `AddRef` and the profiler's registration made one at a time, their `Release` on the main thread after the batch; a worker's `GetCamera` answered with the main thread's; needs `[ShadowPrepass] Mode` other than `off`, not with `[Debug] TraversalCensus`) · `serial` (the same batches on the main thread alone) · `time` (the game's own update, timed in the log) | `OPTIPERF_PARTICLE_UPDATE` |
+| `[ParticleUpdate] Workers` | `auto` (default: the processors `FlushThreadPlacement=apart` leaves to the other threads less one, else half the process's less one; at most 4) · `1`-`8` | `OPTIPERF_PARTICLE_UPDATE_WORKERS` |
+| `[ParticleUpdate] Priority` | `normal` (default) · `above` (the workers' thread priority, a test) | `OPTIPERF_PARTICLE_UPDATE_PRIORITY` |
 | `[Allocator] Mode` | `mimalloc` · `off` | `OPTIPERF_ALLOCATOR` |
 | `[Allocator] LowMemoryMB` | x64 reservation below 4 GB, default 1536 | |
 | `[Allocator] Owners` | `off` · `on` (x64, a diagnostic: each block keeps the code that allocated it; the pointer census needs it) | `OPTIPERF_ALLOCATOR_OWNERS` |

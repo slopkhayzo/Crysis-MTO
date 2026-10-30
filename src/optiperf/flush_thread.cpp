@@ -903,6 +903,14 @@ unsigned long long FlushThread_JoinStartedAt() {
 #endif
 }
 
+unsigned long long FlushThread_OthersMask() {
+#ifdef _WIN64
+    return g.apart ? static_cast<unsigned long long>(g.othersMask) : 0;
+#else
+    return 0;
+#endif
+}
+
 void FlushThread_Run(void (*fn)(void*), void* ctx, void (*after)(void*), void* afterCtx) {
     if (!g.started) Start();
 #ifdef _WIN64
