@@ -82,8 +82,10 @@ target_compile_definitions(optiperf PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN
 target_compile_options(optiperf PRIVATE ${OPTIPERF_CXX_FLAGS})
 target_link_libraries(optiperf PRIVATE mimalloc-static minhook_static)
 set_target_properties(optiperf PROPERTIES SUFFIX ".asi")
-add_custom_command(TARGET optiperf POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/optiperf/optiperf.ini $<TARGET_FILE_DIR:optiperf>/optiperf.ini)
+# (a target of its own, made by every build: a change of the settings alone relinks nothing)
+add_custom_target(optiperf_ini ALL
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/optiperf/optiperf.ini $<TARGET_FILE_DIR:optiperf>/optiperf.ini
+  VERBATIM)
 
 # Development launcher (injects optiperf.asi without an ASI loader)
 add_executable(optiperf_launch launcher/main.cpp)
