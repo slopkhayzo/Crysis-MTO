@@ -44,6 +44,7 @@ set(OPTIPERF_CXX_FLAGS $<$<COMPILE_LANGUAGE:CXX>:/W4 /permissive- /utf-8 /EHsc>)
 set(OPTIPERF_CORE
   optiperf/allocator.cpp
   optiperf/allocator_owners.cpp
+  optiperf/anim_update.cpp
   optiperf/calltrace.cpp
   ${OPTIPERF_ASM}
   optiperf/census.cpp
