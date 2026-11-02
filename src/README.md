@@ -8,9 +8,16 @@ Runtime performance patches for Crysis (2007), shipped as an **ASI plugin** (`op
 | Allocator | CrySystem's `CryMalloc`/`CryFree`/`CryRealloc` replaced by mimalloc (no global lock); on x64, engine memory kept below 4 GB, which makes the 64-bit game run | x86 + x64 |
 | Diagnostics | Logs crash-type exceptions, error boxes and `ExitProcess` with the engine call chain; records the engine's thread names | x86 + x64 |
 | Call tracer (developer tool, off by default) | Counts calls through the engine's vtables per method, caller, call site and thread (x86: also times them); used to map the render-thread boundary | renderer: x86 DX10 + x64; all modules: x64 |
-| Shadow pre-pass (Phase 2, experimental, off by default) | Renders the shadow casters before the renderer's flush instead of inside it, and replays their output into each shadow map; the first step towards a render thread, no speed-up on its own | x64 DX10 |
-| Reflections before the flush (Phase 2, experimental, off by default) | Renders the ocean reflection's scene before the flush too, and replays it where the game draws it; part of the shadow pre-pass's settings | x64 DX10 |
-| Far trees before the flush (Phase 2, experimental, off by default) | Generates the distant-vegetation sprites before the flush, and decides there how they are drawn; builds on the reflections | x64 DX10 |
+| Shadow pre-pass (Phase 2) | Renders the shadow casters before the renderer's flush instead of inside it, and replays their output into each shadow map; the first step towards a render thread, no speed-up on its own | x64 DX10 |
+| Reflections before the flush (Phase 2) | Renders the ocean reflection's scene before the flush too, and replays it where the game draws it; part of the shadow pre-pass's settings | x64 DX10 |
+| Far trees before the flush (Phase 2) | Generates the distant-vegetation sprites before the flush, and decides there how they are drawn; builds on the reflections | x64 DX10 |
+| Render thread | The flush, then the HUD and the present, on a thread of their own while the main thread goes on with its next frame, its scene traversal included (`FlushThread=overlap`, `FlushThreadBarrier`, `FlushThreadRecord=beside`, `FlushThreadPresent`); the parts above and the snapshots below prepare and answer the flush's calls | x64 DX10 |
+| Thread placement | The main thread and the render thread on a physical core each, the process's other threads kept off both (`FlushThreadPlacement=apart`) | x64 DX10 |
+| Particle update | The 3D engine's particle emitters updated at once by worker threads and the main thread (`[ParticleUpdate]`) | x64 DX10 |
+| Animation update | The characters' forward kinematics made at once by worker threads at the end of the entity update, one step late for the game's logic (`[AnimUpdate]`) | x64 DX10 |
+| Frame log (off by default) | The frame rate a second, the average and the lows (`[Debug] FrameLog`) | x64 (x86 untested) |
+
+Everything from the shadow pre-pass down, except the frame log, is off in the code's defaults and turned on by the package's `optiperf.ini`.
 
 **Supported:** Crysis 1.2.1 (build 6156, GOG/Steam). There are **no version or hash checks.** Each patch finds its target by byte pattern and verifies it once at hook time:
 
@@ -36,7 +43,7 @@ Needs Visual Studio 2022+ with the C++ x86/x64 tools (CMake and Ninja come with 
 .\build\x64\allocator_test.exe             # allocator outside the game: layout, realloc, x64 below-4 GB guarantee
 .\build\x86\calltrace_test.exe             # call tracer outside the game (x64: build\x64\...)
 .\build\x64\shadow_prepass_test.exe        # Phase 2: list handling, vtable counter, its code in Bin64's renderer and 3D engine
-.\package.ps1 -Version 0.2.0               # Release build + dist\optiperf-0.2.0.zip
+.\package.ps1 -Version 1.0.0               # Release build + dist\optiperf-1.0.0.zip
 ```
 
 - `optiperf_launch.exe "<Crysis>\Bin32\Crysis.exe" -dx10` injects the plugin without installing UAL, for development. Use the matching architecture's launcher.
