@@ -16,6 +16,7 @@
 #include "calltrace.h"
 #include "config.h"
 #include "diag.h"
+#include "frame_log.h"
 #include "log.h"
 #include "particle_batch.h"
 #include "shadow_prepass.h"
@@ -50,6 +51,7 @@ PVOID g_cookie = nullptr;
 
 void DispatchModule(const wchar_t* baseName, char* base, size_t size) {
     optiperf::Allocator_OnModuleLoaded(baseName, base, size);
+    optiperf::FrameLog_OnModuleLoaded(baseName, base, size);
     optiperf::ParticleBatch_OnModuleLoaded(baseName, base, size);
     optiperf::ShadowPrepass_OnModuleLoaded(baseName, base, size);
     optiperf::CallTrace_OnModuleLoaded(baseName, base, size);
@@ -67,6 +69,7 @@ VOID CALLBACK OnDllNotification(ULONG reason, const LdrDllNotificationData* data
 }
 
 void ReportAll(const char* when) {
+    optiperf::FrameLog_Report(when);
     optiperf::Allocator_Report(when);
     optiperf::ParticleBatch_Report(when);
     optiperf::ShadowPrepass_Report(when);
