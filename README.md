@@ -4,10 +4,11 @@
 > This mod has been pretty much entirely generated using AI;
 > I won't and will never claim to have enough knowledge or expertise to do this
 > kind of reverse-engineering by myself; I've played from the first level through
-> Assault with it and so far spotted no major issues (on my machine ofc, if you
+> Assault with it (5-6 levels) and so far spotted no major issues (on my machine ofc, if you
 > have issues feel free to open an Issue).
-> It has only been tested with the GOG version of the game so far, so no
-> guarantees for the Steam one for now.
+> I've only tested it with the GOG version of the game so far (2.0.0.7), so no
+> guarantees for other exes for now.
+> If you're interested and want more (human generated) info, I have a blog post [here](https://slop-blog.enkhayzomachines.net/posts/crysis-multithreaded-overhaul) :)
 
 A CPU-multithreading mod for Crysis (2007). The game runs its simulation, its scene traversal and every Direct3D call on one thread. This mod moves the renderer's work onto a thread of its own, spreads two of the main thread's jobs (the particle emitters' update and the characters' animation) over worker threads, and fixes two engine defects that cost frame rate. It ships as an ASI plugin, `optiperf.asi`, loaded by [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader); no game file is modified.
 
