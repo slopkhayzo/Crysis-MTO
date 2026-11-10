@@ -31,7 +31,7 @@ If anything differs, only that patch stays off, and `optiperf.log` says why.
 
 ## Install (players)
 
-Run `package.ps1`, or take a release zip. Copy its `Bin32`/`Bin64` folders into the Crysis folder. Each gets `optiperf.asi` and `optiperf.ini`, and from the zip with the loader `version.dll` (Ultimate ASI Loader v9.7.4); the plugin-only zip is for a game that already has an ASI loader. See [dist/README.txt](dist/README.txt), which ships in both.
+Run `package.ps1`, or take a release archive, and extract it into the Crysis folder. `Bin32` and `Bin64` each get `optiperf.asi` and `optiperf.ini`, and from the archive with the loader `version.dll` (Ultimate ASI Loader v9.7.4); the plugin-only archive is for a game that already has an ASI loader. Both archives' `README.txt` comes from [dist/README.txt](dist/README.txt).
 
 UAL is installed as `version.dll` because `CrySystem.dll` imports that name (so do `winmm.dll`/`wininet.dll`), so the loader comes in with the first engine DLL. In practice UAL loads plugins after CrySystem and the renderer are mapped (it waits for game code to run). The plugin therefore patches whatever is already loaded and watches for later loads; the allocator copes with blocks allocated before it was installed.
 
@@ -45,8 +45,8 @@ Needs Visual Studio 2022+ with the C++ x86/x64 tools (CMake and Ninja come with 
 .\build\x64\allocator_test.exe             # allocator outside the game: layout, realloc, x64 below-4 GB guarantee
 .\build\x86\calltrace_test.exe             # call tracer outside the game (x64: build\x64\...)
 .\build\x64\shadow_prepass_test.exe        # Phase 2: list handling, vtable counter, its code in Bin64's renderer and 3D engine
-.\package.ps1 -Version 1.0.0               # Release build + dist\optiperf-1.0.0-with-asi-loader.zip and -plugin-only.zip
-                                           # (-SkipBuild: package the binaries already in build\release)
+.\package.ps1 -Version 1.0.0               # Release build + dist\Crysis-MTO-v1.0.0-plugin-only.zip and
+                                           # -with-Ultimate-ASI-Loader-v9.7.4.zip (-SkipBuild: the binaries in build\release)
 ```
 
 - `optiperf_launch.exe "<Crysis>\Bin32\Crysis.exe" -dx10` injects the plugin without installing UAL, for development. Use the matching architecture's launcher.
