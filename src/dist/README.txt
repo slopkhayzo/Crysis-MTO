@@ -43,9 +43,14 @@ game's own code runs, and on which thread.
 
 INSTALL
 
+There are two zips with the same plugin. Take the one "with-asi-loader", unless your game already has an ASI
+loader in Bin32 and Bin64 (for example Ultimate ASI Loader as version.dll or winmm.dll, from another mod): then
+take the "plugin-only" one, which leaves the loader out. Without a loader the plugin isn't loaded, and nothing
+changes.
+
 1. Open your Crysis folder (the one that contains Bin32, Bin64 and Game).
-2. Copy the Bin32 and Bin64 folders from this package into it. Three new files are added to each folder:
-     version.dll   (Ultimate ASI Loader - it loads the plugin)
+2. Copy the Bin32 and Bin64 folders from this package into it. New files in each folder:
+     version.dll   (Ultimate ASI Loader - it loads the plugin; only in the zip with the loader)
      optiperf.asi  (the fixes)
      optiperf.ini  (settings)
    Nothing is overwritten.
@@ -62,8 +67,8 @@ To check it works, look at Bin32\optiperf.log (or Bin64\optiperf.log) after star
 
 UNINSTALL
 
-Delete version.dll, optiperf.asi, optiperf.ini and optiperf.log from Bin32 and Bin64 (and optiperf_frames.csv,
-if you turned the frame log on).
+Delete optiperf.asi, optiperf.ini and optiperf.log from Bin32 and Bin64, and version.dll if it came with this
+package (and optiperf_frames.csv, if you turned the frame log on).
 
 
 SETTINGS (optiperf.ini)
@@ -82,7 +87,8 @@ lows and the longest frame every 10 seconds and when the game ends. Menus and lo
 
 COMPATIBILITY
 
-* Another mod already uses version.dll: rename this package's version.dll to winmm.dll (both names work).
+* Another mod already uses version.dll: if that is Ultimate ASI Loader, take the plugin-only zip; if not, rename
+  this package's version.dll to winmm.dll (both names work).
 * Other ASI plugins can share the same loader: put them next to optiperf.asi.
 * Mods that replace CryGame.dll (most single-player mods) are fine.
 * The 64-bit fix needs Windows 10 or later.
@@ -90,5 +96,5 @@ COMPATIBILITY
 
 CREDITS
 
-Ultimate ASI Loader by ThirteenAG, mimalloc by Microsoft, MinHook by Tsuda Kageyu - see
-optiperf-THIRD-PARTY-NOTICES.txt.
+Ultimate ASI Loader by ThirteenAG (in the zip with the loader), mimalloc by Microsoft, MinHook by Tsuda Kageyu -
+see optiperf-THIRD-PARTY-NOTICES.txt.

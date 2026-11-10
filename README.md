@@ -27,7 +27,7 @@ To measure the frame rate, set `[Debug] FrameLog=on` in `optiperf.ini`: a line a
 
 ## Install
 
-Take a release zip, or build one (below). Then follow its `optiperf-README.txt` ([src/dist/README.txt](src/dist/README.txt)): copy its `Bin32` and `Bin64` folders into the Crysis folder.
+Take a release zip, or build them (below): `optiperf-<version>-with-asi-loader.zip`, or `optiperf-<version>-plugin-only.zip` if the game already has an ASI loader (from another mod). Then follow its `optiperf-README.txt` ([src/dist/README.txt](src/dist/README.txt)): copy its `Bin32` and `Bin64` folders into the Crysis folder.
 
 ## Build
 
@@ -35,11 +35,11 @@ Needs Visual Studio 2022 or later with the C++ x86/x64 tools (CMake and Ninja co
 
 ```powershell
 .\build.ps1 -Arch x86,x64        # build\x86, build\x64: optiperf.asi, optiperf.ini, the dev launcher, the tests
-.\package.ps1 -Version 1.0.0     # the Release build, packaged as dist\optiperf-1.0.0.zip
+.\package.ps1 -Version 1.0.0     # the Release build, packaged as dist\optiperf-1.0.0-with-asi-loader.zip and -plugin-only.zip
 ```
 
 [src/README.md](src/README.md) describes the code, the settings and the tests.
 
 ## License
 
-MIT (see [LICENSE](LICENSE)). The package also contains Ultimate ASI Loader, mimalloc and MinHook, under their own licenses (see its `optiperf-THIRD-PARTY-NOTICES.txt`).
+MIT (see [LICENSE](LICENSE)). The plugin contains mimalloc and MinHook, and the zip with the loader Ultimate ASI Loader, under their own licenses (see each zip's `optiperf-THIRD-PARTY-NOTICES.txt`).
