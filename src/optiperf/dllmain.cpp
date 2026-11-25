@@ -17,6 +17,7 @@
 #include "config.h"
 #include "diag.h"
 #include "frame_log.h"
+#include "frame_probe.h"
 #include "log.h"
 #include "particle_batch.h"
 #include "shadow_prepass.h"
@@ -70,6 +71,7 @@ VOID CALLBACK OnDllNotification(ULONG reason, const LdrDllNotificationData* data
 
 void ReportAll(const char* when) {
     optiperf::FrameLog_Report(when);
+    optiperf::FrameProbe_Report(when);
     optiperf::Allocator_Report(when);
     optiperf::ParticleBatch_Report(when);
     optiperf::ShadowPrepass_Report(when);

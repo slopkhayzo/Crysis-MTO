@@ -59,6 +59,7 @@
 #include "env_snapshot.h"
 #include "flush_thread.h"
 #include "frame_phases.h"
+#include "frame_probe.h"
 #include "particle_update.h"
 #include "producer_timing.h"
 #include "traversal_census.h"
@@ -419,6 +420,13 @@ struct PodArrayPtr {  // PodArray<T*> (x64): elements, count, capacity
 };
 #endif
 
+// A frustum's dirty flags (+0x86, a byte per GPU) as the flush's PrepareDepthMap will leave them (DirtyAfter).
+struct DirtyAfterFlush {
+    char* frustum;
+    uint8_t bytes[4];
+};
+constexpr int kMaxDirty = 256;  // the frustums of the level's lights: at most 32 lights with 8 each
+
 // The frustum PrepareDepthMap is replaying: its stashes in side order, and the side its loop is on (a side ends at its
 // nested EF_EndEf3D).
 struct Replay {
@@ -445,6 +453,9 @@ struct State {
     std::vector<sp::Stash> stashes;
     int used = 0;  // stashes of the current flush
     Replay replay;
+    // the current flush's frustums with their dirty flags as it will leave them (At=flush: from its entry to its end)
+    DirtyAfterFlush dirty[kMaxDirty] = {};
+    int nDirty = 0;
     // verify: the spies of the frustum being replayed, and whether the current side differs
 #ifdef _WIN64
     std::vector<Spy> spies;
@@ -627,6 +638,18 @@ int SideCount(uint8_t mask) {
 // deferred mode (PrepareDepthMap sets +0xF0 to this): a point light's six sides share one 3x2 texture
 bool Deferred(char* f) { return At_<uint8_t>(f, kFOmni) && *g.t.shadowsDeferred; }
 
+// Whether PrepareDepthMap creates a point light's map texture anew (another format, type or size), with all sides
+// dirty. Needs the point-light code (g.omni).
+bool OmniTextureRecreated(char* f, char* tex) {
+    const bool deferred = Deferred(f);
+    const int size = (std::max)(0x20, At_<int>(f, kFSize));
+    const int format =
+        !At_<uint8_t>(f, kFFlag82) && !At_<uint8_t>(f, kFFlag83) ? (*g.t.shadowTexFormat == 4 ? 0x20 : 0x1F) : 0x13;
+    return At_<int>(tex, kTFormat) != format || At_<int>(tex, kTType) != (deferred ? 1 : 3) ||
+           At_<int>(tex, kTWidth) != (deferred ? 3 * size : size) ||
+           At_<int>(tex, kTHeight) != (deferred ? 2 * size : size);
+}
+
 // The sides PrepareDepthMap will render, from its early-outs and texture checks, without their side effects: bit 0 for
 // a directional map, bit i for side i of a point light's; 0 if it renders nothing (the map is up to date).
 uint8_t SideMask(char* r, char* f) {
@@ -640,19 +663,47 @@ uint8_t SideMask(char* r, char* f) {
         if (kept && (omni ? (At_<uint8_t>(f, kFSideMask) & dirty) == 0 : dirty == 0)) return 0;
         if (!kept) dirty = 0x3F;
         if (!*g.t.shadowGen) return 0;  // r_ShadowGen 0 freezes existing maps
-        if (omni && g.omni) {  // a texture of another format, type or size is created anew, with all sides dirty
-            const bool deferred = Deferred(f);
-            const int size = (std::max)(0x20, At_<int>(f, kFSize));
-            const int format = !At_<uint8_t>(f, kFFlag82) && !At_<uint8_t>(f, kFFlag83)
-                                   ? (*g.t.shadowTexFormat == 4 ? 0x20 : 0x1F)
-                                   : 0x13;
-            if (At_<int>(tex, kTFormat) != format || At_<int>(tex, kTType) != (deferred ? 1 : 3) ||
-                At_<int>(tex, kTWidth) != (deferred ? 3 * size : size) ||
-                At_<int>(tex, kTHeight) != (deferred ? 2 * size : size))
-                dirty = 0x3F;
-        }
+        if (omni && g.omni && OmniTextureRecreated(f, tex)) dirty = 0x3F;
     }
     return omni ? uint8_t(At_<uint8_t>(f, kFSideMask) & dirty & 0x3F) : uint8_t(1);
+}
+
+// The dirty flags PrepareDepthMap leaves in frustum f (+0x86, a byte per GPU), from the same early-outs and texture
+// checks as SideMask: its writes of 0x3F to all four (a new reset id; a texture that isn't the map's, or a point
+// light's created anew), then its side loop's on GPU 0's byte: cleared for a directional map, the rendered sides' bits
+// cleared for a point light's. (A directional map's texture created anew sets GPUs 1-3's bytes too, which this leaves
+// as they are: they are 0x3F once the 3D engine has asked for the map, and nothing on one GPU reads them.) False for a
+// point light's map without the point-light code (g.omni), whose texture checks SideMask can't make then.
+bool DirtyAfter(char* r, char* f, uint8_t (&out)[4]) {
+    std::memcpy(out, f + kFDirty, sizeof out);
+    auto* casters = At_<PodArrayPtr*>(f, kFCasters);
+    if (!casters || casters->count <= 0) return true;  // it returns at once
+    const bool omni = At_<uint8_t>(f, kFOmni) != 0;
+    if (omni && !g.omni) return false;
+    if (At_<int>(f, kFResetId) != At_<int>(r, kRResetId)) std::memset(out, 0x3F, sizeof out);
+    const uint8_t sides = At_<uint8_t>(f, kFSideMask);
+    if (char* tex = At_<char*>(f, kFTexture)) {
+        const bool kept = At_<void*>(tex, kTTexture) && At_<void*>(tex, kTOwner) == At_<void*>(f, kFOwner);
+        if (kept && (omni ? (sides & out[0]) == 0 : out[0] == 0)) return true;  // up to date
+        if (!kept) std::memset(out, 0x3F, sizeof out);
+        if (!*g.t.shadowGen) return true;  // r_ShadowGen 0 freezes existing maps
+        if (omni && OmniTextureRecreated(f, tex)) std::memset(out, 0x3F, sizeof out);
+    }
+    out[0] = omni ? uint8_t(out[0] & ~(sides & 0x3F)) : uint8_t(0);
+    return true;
+}
+
+// For the light part's hand-off (At=flush): the dirty flags this flush's PrepareDepthMap calls will leave in each
+// frustum the pre-pass met, read at the flush's entry (the first meeting's, if a frustum is met twice: the second
+// call finds the map the first rendered up to date).
+void RecordDirtyAfter(char* r, char* f) {
+    if (g.nDirty >= kMaxDirty) return;
+    for (int k = 0; k < g.nDirty; ++k)
+        if (g.dirty[k].frustum == f) return;
+    DirtyAfterFlush& d = g.dirty[g.nDirty];
+    if (!DirtyAfter(r, f, d.bytes)) return;
+    d.frustum = f;
+    ++g.nDirty;
 }
 
 // The class an object's MSVC RTTI names (x64 locators: image-relative), e.g. ".?AVCVegetation@@"; "?" if it has none.
@@ -861,6 +912,7 @@ void EndOfFlush() {
         if (g.stashes[i].state == kPending) ++g.st.unused;
     g.used = 0;
     g.replay = Replay{};
+    g.nDirty = 0;
 }
 
 sp::Stash& NewStash(char* f, int side, PodArrayPtr* casters) {
@@ -904,6 +956,7 @@ void PrePass(char* r, int flags, bool fromFlush) {
             char* f = frustums[j];
             ++g.st.frustums;
             ++frustumsSeen;
+            if (fromFlush) RecordDirtyAfter(r, f);  // (for the light part's hand-off, which follows)
             const uint8_t mask = SideMask(r, f);
             if (!mask) {
                 ++g.st.upToDate;
@@ -1190,6 +1243,7 @@ void EndEf3DHook(char* r, int flags) {
         AnimUpdate_FlushEntry();         // (set up at the second flush)
         ParticleUpdate_FlushEntry(r);    // (set up at the second flush)
         FlushThread_OnEntry();           // (the flush's thread, known to the hand-off below)
+        FrameProbe_OnFlush(r);           // (a diagnostic, [Debug] FrameProbe: installed at the first flush)
         TraversalRecord_OnFlushEntry(r);  // (verify: the traversal's producer calls replayed and compared)
         Allocator_BeginPins();           // (FlushThread=overlap: what the parts will write after the flush, kept)
         FramePhases_FlushEntry();        // (a diagnostic: optiperf's work before the flush, then the flush, timed)
@@ -1537,6 +1591,20 @@ void ShadowPrepass_MapStashes(void (*fn)(char**, void**, void*), void* ctx) {
     (void)fn;
     (void)ctx;
 #endif
+}
+
+bool ShadowPrepass_DirtyAfterFlush(const char* frustum, uint8_t* bytes) {
+#ifdef _WIN64
+    for (int k = 0; k < g.nDirty; ++k)
+        if (g.dirty[k].frustum == frustum) {
+            std::memcpy(bytes, g.dirty[k].bytes, sizeof g.dirty[k].bytes);
+            return true;
+        }
+#else
+    (void)frustum;
+    (void)bytes;
+#endif
+    return false;
 }
 
 const char* ShadowPrepass_AfterStep() {

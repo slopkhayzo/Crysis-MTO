@@ -23,6 +23,12 @@
 // The renderer's pointers are pointed at the copies. After the flush the bytes it wrote into a copy (where it differs
 // from the pristine one) are written into the original, but in a word the original changed meanwhile (the next frame,
 // on a render thread), and the pointers are put back.
+//
+// A word the next frame rewrites with the value it had at the hand-off doesn't look changed, so the flush's write would
+// undo it. The frustums' dirty flags are such words: the 3D engine asks for a map again by writing 0x3F3F3F3F, which
+// they held at the hand-off if it asked last frame too; and it reads them back itself, in the same frame, beside the
+// flush. So the flags the flush will leave (the shadow pre-pass knows which maps it renders) are set in the originals at
+// the hand-off (Preset), as vanilla's next frame finds them, and the flush's own write isn't written back.
 
 #include <cstddef>
 #include <cstdint>
@@ -44,6 +50,12 @@ constexpr uint32_t kCastShadowMaps = 0x10;
 // ShadowMapFrustum (x64)
 constexpr size_t kFrustumBytes = 0x388;  // the 3D engine allocates and clears 0x388 bytes
 constexpr int kFCasters = 0x110;         // PodArray<IShadowCaster*>*
+// The dirty flags, a byte per GPU (sides to render again: bit i for a point light's side i). The 3D engine asks for a
+// map by writing 0x3F3F3F3F there, and reads GPU 0's byte back right after, in the same frame, to decide whether to move
+// the map with the camera and to refill its casters (CLightEntity::InitShadowFrustum_SUN and the others);
+// PrepareDepthMap clears the bits of what it renders.
+constexpr int kFDirty = 0x86;
+constexpr size_t kFDirtyBytes = 4;
 // CRenderObject (x64)
 constexpr size_t kObjectBytes = 0x130;
 constexpr int kOFrustums = 0xE8;  // m_pShadowCasters: PodArray<ShadowMapFrustum*>*, the frustums that shadow it
@@ -176,6 +188,22 @@ public:
     // The copy of entry i, or null if it wasn't copied.
     char* Copy(size_t i) const { return entries_[i].at == kNotCopied ? nullptr : CopyOf(entries_[i]); }
     const char* Pristine(size_t i) const { return entries_[i].at == kNotCopied ? nullptr : PristineOf(entries_[i]); }
+    // Bytes the flush is known to leave in object i (the shadow maps' dirty flags it will clear), set at the hand-off
+    // in the original and its pristine copy, not in the copy the flush works on. On a render thread the next frame then
+    // reads them, beside the flush, as it would after vanilla's flush; and its own write of what the flush found (the
+    // 3D engine asking for the map again, with the value it always writes) is a change of the original, which WriteBack
+    // keeps. Where the flush leaves other bytes, WriteBack writes those as before, unless the original changed. Not over
+    // the field SetField sets. Returns whether it changed anything.
+    bool Preset(size_t i, size_t offset, const void* bytes, size_t n) {
+        Entry& e = entries_[i];
+        if (e.at == kNotCopied || offset + n > bytes_) return false;
+        if (e.field != kNoField && offset < size_t(e.field) + sizeof(char*) && size_t(e.field) < offset + n) return false;
+        char* const p = PristineOf(e);
+        if (std::memcmp(p + offset, bytes, n) == 0) return false;
+        std::memcpy(e.object + offset, bytes, n);
+        std::memcpy(p + offset, bytes, n);
+        return true;
+    }
     // A pointer field of copy i set in the copy and its pristine copy: a pointer the copies need, not the flush's write.
     // (One per object; the original's value is kept, to tell a change of the original from it.)
     void SetField(size_t i, size_t offset, char* v) {

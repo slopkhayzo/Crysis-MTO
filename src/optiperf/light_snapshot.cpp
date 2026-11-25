@@ -8,6 +8,9 @@
 // The hand-off, at the outer EF_EndEf3D's entry, after the other parts' captures and before the census:
 //   - every recorded light is copied, then every shadow frustum the copied lights or the drawn objects point at (each
 //     with a pristine copy, light_record.h);
+//   - the frustums' dirty flags are set in the originals as the flush will leave them (the shadow pre-pass knows which
+//     maps it renders): the next frame reads them back beside the flush, and asks for a map again with the value they
+//     held at the hand-off, which the write-back alone would undo (light_record.h);
 //   - into an arena: each frustum's caster list, each light's frustum array and each drawn object's frustum list,
 //     their pointers at the copies; the copies point at those;
 //   - pointed at the copies: levels 1 and 2's light lists; the reflections' captured lights, which the flush puts
@@ -47,6 +50,7 @@
 #include "allocator.h"
 #include "config.h"
 #include "flush_thread.h"
+#include "frame_probe.h"
 #include "hooks.h"
 #include "key_index.h"
 #include "light_record.h"
@@ -69,6 +73,15 @@ LMode ReadMode() {
 }
 
 #ifdef _WIN64
+// The frustums' dirty flags (not in optiperf.ini, for comparisons): set in the originals at the hand-off as the flush
+// leaves them (default), or "after": only written back after the flush, as up to 1.0.0, which on a render thread loses
+// the next frame's requests for a map and shows it the flags from before the flush.
+bool ReadPresetDirty() {
+    const std::wstring v = ConfigString(L"ShadowPrepass", L"LightsDirtyFlags", L"OPTIPERF_SHADOW_PREPASS_LIGHTS_DIRTY_FLAGS",
+                                        L"handoff");
+    return _wcsicmp(v.c_str(), L"after") != 0;
+}
+
 const char* ModeName(LMode m) { return m == LMode::On ? "on" : m == LMode::Verify ? "verify" : "off"; }
 
 // EF_ADDDlight's start: a null light (a warning through the log), EF_IsFakeDLight (slot +0x3A0), then the light's
@@ -165,6 +178,10 @@ struct Stats {
     uint64_t recordedInFlush = 0;  // the main thread's while the flush ran (the next frame's, on a render thread)
     uint64_t listsAfter = 0, fieldsAfter = 0;  // put back after the flush, beside what was redirected
     uint64_t translated = 0;                   // pointers into the copies the flush wrote, written back as the originals'
+    // the frustums' dirty flags set at the hand-off as the flush leaves them (the shadow pre-pass's prediction); after
+    // it: as predicted or not; rewritten by the next frame meanwhile (on a render thread), and of those, to the value
+    // the flush found, which the write-back alone undid
+    uint64_t dirtyPreset = 0, dirtyAsPredicted = 0, dirtyNotPredicted = 0, dirtyRewritten = 0, dirtyAsFound = 0;
     uint64_t arenaMax = 0;
     uint64_t copyCycles = 0, afterCycles = 0;
     // verify
@@ -181,6 +198,8 @@ struct ObjectList {  // a drawn object's frustum list, pointed at a copy
 struct State {
     LMode mode = LMode::Off;
     bool installed = false, ready = false, active = false, inFlush = false;
+    bool presetDirty = true;  // the frustums' dirty flags set at the hand-off (ReadPresetDirty)
+    bool words = false;       // [Debug] LightWords (a diagnostic): verify's per-word comparison of the frustums in on
     LightTarget t;
     const ShadowPrepassTarget* sp = nullptr;
     AddLightFn addLight = nullptr;
@@ -199,6 +218,11 @@ struct State {
     std::vector<std::pair<const lt::PtrList*, lt::PtrList*>> listCopies;
     std::vector<std::pair<const char*, char**>> arrayCopies;  // a light's frustum array -> its copy
     std::vector<ObjectList> objectLists;
+    struct Preset {  // a frustum whose dirty flags were set at the hand-off: as the flush found them, as it leaves them
+        size_t index;
+        uint8_t found[lt::kFDirtyBytes], leaves[lt::kFDirtyBytes];
+    };
+    std::vector<Preset> presets;  // this flush's
     struct Range {
         const char* start;
         size_t size;
@@ -292,6 +316,22 @@ bool LightFrustums(const char* light, char* (&out)[lt::kLightFrustums]) {
         if (ended) f = nullptr;
     }
     return out[0] != nullptr;
+}
+
+// [Debug] FrameProbe: the sun's frustums (the first recorded directional light's, read from the original light: its
+// copy points at the copies from the hand-off on)
+bool SunFrustums(char* (&out)[lt::kLightFrustums]) {
+    constexpr uint32_t kDirectional = 2;
+    const lt::Copies& L = g.lights.copies;
+    for (size_t i = 0; i < L.Recorded(); ++i) {
+        const char* const o = L.Object(i);
+        uint32_t flags = 0;
+        if (!o || !SafeRead(o + lt::kLFlags, reinterpret_cast<char*>(&flags), sizeof flags) || !(flags & kDirectional))
+            continue;
+        if (LightFrustums(o, out)) return true;
+    }
+    for (char*& f : out) f = nullptr;
+    return false;
 }
 
 lt::PtrList* CopiedList(const void* list) {
@@ -585,6 +625,18 @@ void HandOff(char* r) {
         if (const char* c = L.Copy(i)) AddLightFrustums(c);
     ForEachItem(&AddObjectFrustums);
     Copy(g.frustums);
+    // the frustums' dirty flags as the flush will leave them (the shadow pre-pass's prediction, At=flush), set in the
+    // originals now (light_record.h, Preset): the next frame finds them as after vanilla's flush, and its requests for
+    // a map stay, though it writes the value the flush found. The copies keep the flags the flush has to see.
+    g.presets.clear();
+    for (size_t i = 0; g.presetDirty && i < F.Recorded(); ++i) {
+        const char* const p = F.Pristine(i);
+        State::Preset x{i, {}, {}};
+        if (!p || !ShadowPrepass_DirtyAfterFlush(F.Object(i), x.leaves)) continue;
+        std::memcpy(x.found, p + lt::kFDirty, lt::kFDirtyBytes);
+        if (F.Preset(i, lt::kFDirty, x.leaves, lt::kFDirtyBytes)) g.presets.push_back(x);
+    }
+    s.dirtyPreset += g.presets.size();
     // the frustums' caster lists, as they are
     for (size_t i = 0; i < F.Recorded(); ++i) {
         const char* c = F.Copy(i);
@@ -629,9 +681,18 @@ void HandOff(char* r) {
         if (g.lights.copies.RedirectField(field)) ++g.st.fields;
     });
     if (F.RedirectField(r + kRFrustum)) ++s.fields;
-    // the shadow pre-pass's stashes
+    // the shadow pre-pass's stashes (and, for [Debug] FrameProbe's tags, which of the sun's maps have one: the maps
+    // the flush renders)
+    struct SunMaps {
+        char* array[lt::kLightFrustums];
+        uint32_t rendered;
+    } sun{{}, 0};
+    if (FrameProbe_On()) SunFrustums(sun.array);
     ShadowPrepass_MapStashes(
-        [](char** frustum, void** casters, void*) {
+        [](char** frustum, void** casters, void* ctx) {
+            auto* s = static_cast<SunMaps*>(ctx);
+            for (int k = 0; k < lt::kLightFrustums && s->array[k]; ++k)
+                if (*frustum == s->array[k]) s->rendered |= 1u << k;
             char* const m = g.frustums.copies.Map(*frustum);
             if (m != *frustum) {
                 *frustum = m;
@@ -639,7 +700,8 @@ void HandOff(char* r) {
             }
             if (lt::PtrList* c = CopiedList(*casters)) *casters = c;
         },
-        nullptr);
+        &sun);
+    if (FrameProbe_On()) FrameProbe_Tag(kProbeTagMaps, sun.rendered);
     s.arenaMax = (std::max)(s.arenaMax, uint64_t(g.arena.Used()));
 }
 
@@ -688,13 +750,44 @@ void Compare(Kind& k) {
     if (changed.objects) LogChanged(k);
 }
 
+// The dirty flags set at the hand-off: whether the flush left them as predicted, and whether the next frame (on a render
+// thread, beside the flush) rewrote them meanwhile.
+void CheckPresets() {
+    Stats& s = g.st;
+    lt::Copies& F = g.frustums.copies;
+    for (const State::Preset& x : g.presets) {
+        const char* const c = F.Copy(x.index);
+        const char* const o = F.Object(x.index);
+        if (!c || Allocator_Dying(o)) continue;  // (freed beside the flush)
+        if (std::memcmp(c + lt::kFDirty, x.leaves, lt::kFDirtyBytes) == 0) {
+            ++s.dirtyAsPredicted;
+        } else if (++s.dirtyNotPredicted <= 10) {
+            uint32_t found, leaves, left;
+            std::memcpy(&found, x.found, 4);
+            std::memcpy(&leaves, x.leaves, 4);
+            std::memcpy(&left, c + lt::kFDirty, 4);
+            Log("lights: frustum %p: the flush found dirty flags %08X and left %08X, the pre-pass predicted %08X "
+                "(written back unless the next frame rewrote them)",
+                o, found, left, leaves);
+        }
+        if (std::memcmp(o + lt::kFDirty, x.leaves, lt::kFDirtyBytes) != 0) {
+            ++s.dirtyRewritten;
+            if (std::memcmp(o + lt::kFDirty, x.found, lt::kFDirtyBytes) == 0) ++s.dirtyAsFound;
+        }
+    }
+    g.presets.clear();
+}
+
 void AfterFlush() {
     Stats& s = g.st;
     if (g.mode == LMode::Verify) {
         Compare(g.lights);
         Compare(g.frustums);
         CompareLists();
+    } else if (g.words) {  // (which words of the frustums the flush wrote, and which the next frame changed beside it)
+        Compare(g.frustums);
     }
+    CheckPresets();
     size_t kept = 0;
     g.lights.writtenBytes += g.lights.copies.WriteBack(&kept);
     g.lights.keptWords += kept;
@@ -770,7 +863,15 @@ void Report(const char* when) {
         double(s.fieldsAfter) / f, double(s.listsAfter) / f, s.objectListsChanged, double(L.writtenBytes) / f,
         double(F.writtenBytes) / f, s.translated, L.keptWords, F.keptWords, double(s.copyCycles) / 3.0e6 / f,
         double(s.afterCycles) / 3.0e6 / f);
-    if (g.mode != LMode::Verify) return;
+    Log("lights [%s]: shadow maps' dirty flags set in the frustums at the hand-off as the flush leaves them: %llu (%.2f "
+        "per flush); after the flush as predicted %llu, not %llu | rewritten meanwhile by the next frame (the 3D engine "
+        "asking for the map again) %llu, %llu of them to the value the flush found",
+        when, s.dirtyPreset, double(s.dirtyPreset) / f, s.dirtyAsPredicted, s.dirtyNotPredicted, s.dirtyRewritten,
+        s.dirtyAsFound);
+    if (g.mode != LMode::Verify) {
+        if (g.words) ReportKind(when, F, f);
+        return;
+    }
     char missed[700], kept[700];
     Where(s.missed, missed, sizeof missed);
     Where(s.kept, kept, sizeof kept);
@@ -866,10 +967,14 @@ void LightSnapshot_Install(const wchar_t* moduleName, char* base, size_t size, c
     g.frustums.copies.SetPins(&Allocator_Pin, &Allocator_Dying);
     g.arena.Init(kArenaBytes, arenaMemory);
     if (g.mode == LMode::Verify) g.buffer.resize(kRendererBytes);
+    g.presetDirty = ReadPresetDirty();
+    g.words = g.mode == LMode::On &&
+              _wcsicmp(ConfigString(L"Debug", L"LightWords", L"OPTIPERF_LIGHT_WORDS", L"off").c_str(), L"on") == 0;
     g.installed = true;
     Log("%ls: lights: mode=%s, EF_ADDDlight +0x%X, CDLight constructor +0x%X (600 bytes; shadow frustums 0x388); "
-        "recording starts after the first flush",
-        moduleName, ModeName(g.mode), unsigned(g.t.addLight - base), unsigned(g.t.lightCtor - base));
+        "the shadow maps' dirty flags %s; recording starts after the first flush",
+        moduleName, ModeName(g.mode), unsigned(g.t.addLight - base), unsigned(g.t.lightCtor - base),
+        g.presetDirty ? "set at the hand-off as the flush leaves them" : "written back after the flush (LightsDirtyFlags=after)");
 #endif
 }
 

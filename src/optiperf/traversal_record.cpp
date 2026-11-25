@@ -60,6 +60,7 @@
 #include "diag.h"
 #include "engine_data.h"
 #include "flush_thread.h"
+#include "frame_probe.h"
 #include "log.h"
 #include "particle_batch.h"
 #include "render_gate.h"
@@ -228,6 +229,12 @@ constexpr size_t kStandInSetBytes = size_t(kStandIns) * kObjectBytes + size_t(kS
                                     size_t(kStandInWaves) * kWaveBytes + kStandInStorage;
 constexpr size_t kRAllObjects = 0x141C8;
 constexpr int kFrameObjects = 0x4000;
+// The temporary objects' pool (EF_GetObject(true, -1)'s, a TArray of CRenderObject*): its objects live across frames,
+// the k-th fresh call of a frame takes slot k (the main traversal's level starts it at 0), and an object keeps its
+// slot in m_Id (+0x8). What EF_GetObject doesn't reset in it (kResetFields) is what the slot's last user left: with the
+// camera still, the same object's last frame. Checked against EF_GetObject's code at the install (its disp32).
+constexpr uint32_t kRTempPool = 0x141D8;
+constexpr size_t kGetObjectScan = 0x80;
 // What the real calls start the storage they hand out as, for the stand-ins' (so that the 3D engine sees the same, and
 // the real storage can start as the stand-in's did): GetObjData resets a new entry's pointer at +0x18 to a default of
 // the renderer's (lea rax, [rip+default] at +15, its displacement at +26) and leaves the rest; AddWaves starts each
@@ -444,6 +451,15 @@ struct Stats {
     // the calls that changed the object they were given (the renderer's own writes into it), by word
     uint64_t objectWrites[kCallKinds] = {};
     uint64_t writeAt[kCallKinds][kObjectBytes / 8] = {};
+    // [Debug] RecordLeftovers (a diagnostic): the temporary objects handed out as stand-ins and made at the replay, and
+    // per byte how often the real object ended with the stand-in's template where the 3D engine didn't change the
+    // stand-in and the real object's own leftover (as EF_GetObject handed it out, which vanilla's 3D engine would have
+    // got) was something else; all objects, and those of the 3D engine's vegetation (their render node, +0xF0)
+    uint64_t leftObjects = 0, leftVegetation = 0;
+    uint64_t leftDiff[kObjectBytes] = {}, leftDiffVeg[kObjectBytes] = {};
+    // stand-ins started from the slot the last traversal's call of the same rank got (StartFromSlot), and from the
+    // template alone (no such call, or its slot unreadable)
+    uint64_t fromSlot = 0, fromTemplate = 0;
 };
 
 struct State {
@@ -550,6 +566,23 @@ struct State {
     std::vector<Attach> replayAttach;
     std::vector<uint32_t> replaySeen;  // per record object: its state as the 3D engine last saw it (in the bytes)
     std::vector<Item> replayItems;
+    // The temporary objects' pool slots (each object's m_Id, +0x8) of the main traversal's temporary EF_GetObject
+    // calls, in their order: this traversal's (recorded, made after a join, or made with no record) and the last one's.
+    // A stand-in starts with what EF_GetObject doesn't reset taken from the slot the last traversal's call of the same
+    // rank got: the slot the replay will take for it as long as the calls come in the same order, and what vanilla's
+    // 3D engine would find in that object (StartFromSlot)
+    std::vector<int16_t> slotsNow, slotsLast;
+    bool fromSlots = true;      // (FlushThreadRecordStandIns=template, for comparisons: the template alone, as before)
+    uint32_t tempAnswered = 0;  // this traversal's temporary objects handed out as stand-ins so far
+    bool madeTraversal = false;  // a main traversal made with no record (beside: the flush had ended, or none ran)
+    uint32_t madeKind = 0;       // ([Debug] FrameProbe's tag: 2 made with no flush beside it, 3 after it ended)
+    // [Debug] RecordLeftovers: each stand-in made at the replay: the real object as EF_GetObject handed it out, its
+    // index among the replay's objects, the stand-in's state when it was handed out (in the bytes)
+    bool leftovers = false;
+    void* vegetationVtable = nullptr;  // Cry3DEngine's CVegetation, looked up at the first check
+    bool vegetationLooked = false;
+    std::vector<uint8_t> leftoverBytes;
+    std::vector<uint32_t> leftoverObject, leftoverTemplate;
     int logged = 0;
     Stats st;
 };
@@ -709,6 +742,77 @@ void PredictObject(const uint8_t* handedOut) {
         g.firstObject = false;
     }
 }
+// --- the stand-ins' leftovers: what EF_GetObject doesn't reset, from the pool slot the replay will take -------------------
+bool g_tempPoolChecked = false;  // (EF_GetObject's code addresses the temporary pool at kRTempPool)
+// the spans of an object EF_GetObject doesn't reset (but the vtable and the ids, the stand-in's own): offset, length
+constexpr int kMaxSpans = 16;
+uint16_t g_leftSpans[kMaxSpans][2] = {};
+int g_leftSpanCount = 0;
+void BuildResetMask() {
+    bool reset[kObjectBytes] = {};
+    for (const auto& f : kResetFields)
+        for (size_t b = f[0]; b < f[0] + f[1] && b < kObjectBytes; ++b) reset[b] = true;
+    for (size_t b = 0; b < kObjectIdsEnd; ++b) reset[b] = true;
+    g_leftSpanCount = 0;
+    for (size_t b = 0; b < kObjectBytes && g_leftSpanCount < kMaxSpans;) {
+        if (reset[b]) {
+            ++b;
+            continue;
+        }
+        size_t e = b;
+        while (e < kObjectBytes && !reset[e]) ++e;
+        g_leftSpans[g_leftSpanCount][0] = uint16_t(b);
+        g_leftSpans[g_leftSpanCount][1] = uint16_t(e - b);
+        ++g_leftSpanCount;
+        b = e;
+    }
+}
+int16_t PoolSlot(const void* object) {
+    int16_t s;
+    std::memcpy(&s, static_cast<const char*>(object) + kObjectIds, sizeof s);
+    return s;
+}
+// what EF_GetObject leaves in the temporary pool's slot, copied into the stand-in s (but what it resets); false where
+// the slot can't be read (beside the flush the slot holds the flush's frame's object: read only)
+bool CopySlot(uint8_t* s, const char* renderer, int16_t slot) {
+    __try {
+        const TArray* const pool = reinterpret_cast<const TArray*>(renderer + kRTempPool);
+        if (slot < 0 || !pool->elems || uint32_t(slot) >= pool->capacity) return false;
+        const uint8_t* const o = reinterpret_cast<uint8_t* const*>(pool->elems)[slot];
+        if (!o) return false;
+        for (int k = 0; k < g_leftSpanCount; ++k)
+            std::memcpy(s + g_leftSpans[k][0], o + g_leftSpans[k][0], g_leftSpans[k][1]);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+// A temporary stand-in, the template in it: what EF_GetObject doesn't reset taken from the slot the last main
+// traversal's call of the same rank got. Vanilla's 3D engine gets that object, the reset fields as the template's and
+// the rest as the slot's last user left it; the record then copies the stand-in into it. With the template's leftovers
+// instead (the frame before's first object's), an object whose 3D engine leaves a field unwritten got another
+// object's value in every frame recorded beside the flush: a plant whose bending had faded (no SetupBending: its bend
+// vector, +0xFC, unwritten) was bent by the template's vector there, and by its own slot's in the frames made directly.
+void StartFromSlot(uint8_t* s, const char* renderer) {
+    const uint32_t rank = g.tempAnswered++;
+    if (g_tempPoolChecked && g.fromSlots && rank < g.slotsLast.size() && CopySlot(s, renderer, g.slotsLast[rank]))
+        ++g.st.fromSlot;
+    else
+        ++g.st.fromTemplate;
+}
+// a temporary object the main traversal got from the real EF_GetObject (replayed, made after a join, or made with no
+// record), in its order
+void NoteSlot(uint64_t object) {
+    if (g_tempPoolChecked && object) g.slotsNow.push_back(PoolSlot(reinterpret_cast<const void*>(uintptr_t(object))));
+}
+// a main traversal's start: the last one's slots kept for its stand-ins
+void SlotsStart(bool made) {
+    g.slotsLast.swap(g.slotsNow);
+    g.slotsNow.clear();
+    g.tempAnswered = 0;
+    g.madeTraversal = made;
+}
+
 // at the traversal's start (after EF_StartEf: the lists and pools as it left them)
 void PredictStart() {
     g.fogPredicted = 0;
@@ -820,6 +924,7 @@ bool Answer(uint64_t self, const uint64_t* a, Call& c, uint64_t predictedObject,
         if (g.standInsUsed >= kStandIns) return Fail(why, kJoinNoRoom);
         uint8_t* const s = g.standIns + size_t(g.standInsUsed) * kObjectBytes;
         std::memcpy(s, g.objectTemplate, kObjectBytes);
+        StartFromSlot(s, reinterpret_cast<const char*>(uintptr_t(self)));  // (what EF_GetObject doesn't reset)
         ++g.standInsUsed;
         ++g.st.onStandIns;
         const uint16_t visible = uint16_t(g.learnedObjects + g.objectsAnswered++);
@@ -928,11 +1033,16 @@ uint64_t Hook(uint64_t self, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4,
         if (g.beside && g.onReady && !g.recording && *g.t.level == 0 && !FlushThread_Beside()) {
             ++g.st.besideNone;  // (no flush beside it, the update joined it: its calls made, not recorded)
             g.madeStart = __rdtsc();
+            g.madeKind = 2;
+            SlotsStart(true);
         } else if (g.beside && g.onReady && !g.recording && FlushThread_Beside() && FlushThread_Ended()) {
             FlushThread_JoinNow();  // (the flush beside it has ended: joined now, with no wait, as without the record)
             ++g.st.besideEnded;
             g.madeStart = __rdtsc();
+            g.madeKind = 3;
+            SlotsStart(true);
         } else if (FlushThread_Beside() ? !g.recording : *g.t.level == 0) {
+            SlotsStart(false);
             g.drawnNow ^= 1;  // (the meshes the last frame drew are the other set's)
             g.drawn[g.drawnNow].clear();
             g.updated.clear();
@@ -946,17 +1056,29 @@ uint64_t Hook(uint64_t self, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4,
             g.broken = true;  // (a level inside the traversal: its calls aren't the traversal's own)
         }
     }
-    if (!g.recording) return f(self, a1, a2, a3, a4, a5, a6, a7, a8, a9);
+    // (a temporary object of the main traversal's own level, from the real EF_GetObject: its pool slot noted)
+    const bool tempObject = K == kGetObject && (a1 & 0xFF) != 0;
+    if (!g.recording) {
+        const uint64_t r = f(self, a1, a2, a3, a4, a5, a6, a7, a8, a9);
+        if (tempObject && g.madeTraversal && *g.t.level == 1) NoteSlot(r);
+        return r;
+    }
     // (beside, the flush beside it ended: nothing to wait for any more, so the record is made now, and the calls from
     // here on)
     if (g.answering && g.beside && FlushThread_Ended()) Join(kJoinFlushEnded);
     if (g.joined) {  // (on, after the traversal joined: made, the stand-ins the 3D engine passes their real objects)
-        if (g.objectIndex.empty()) return f(self, a1, a2, a3, a4, a5, a6, a7, a8, a9);  // (none handed out)
-        uint64_t s = self, w[kWords] = {a1, a2, a3, a4, a5, a6, a7, a8, a9};
-        const int arg = kSlots[K].objectArg;
-        if (arg == kSelf) s = MapToReal(s);
-        if (arg >= 0) w[arg] = MapToReal(w[arg]);
-        return f(s, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8]);
+        uint64_t r;
+        if (g.objectIndex.empty()) {
+            r = f(self, a1, a2, a3, a4, a5, a6, a7, a8, a9);  // (none handed out)
+        } else {
+            uint64_t s = self, w[kWords] = {a1, a2, a3, a4, a5, a6, a7, a8, a9};
+            const int arg = kSlots[K].objectArg;
+            if (arg == kSelf) s = MapToReal(s);
+            if (arg >= 0) w[arg] = MapToReal(w[arg]);
+            r = f(s, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8]);
+        }
+        if (tempObject && *g.t.level == 1) NoteSlot(r);
+        return r;
     }
     const uint64_t t0 = __rdtsc();
     Call c;
@@ -1045,12 +1167,15 @@ uint64_t Hook(uint64_t self, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4,
             std::memcpy(w, a, sizeof w);
             if (arg == kSelf) s = MapToReal(s);
             if (arg >= 0) w[arg] = MapToReal(w[arg]);
-            return f(s, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8]);
+            const uint64_t r = f(s, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8]);
+            if (tempObject && *g.t.level == 1) NoteSlot(r);
+            return r;
         }
     } else {
         ++g.depth;
         v = f(self, a1, a2, a3, a4, a5, a6, a7, a8, a9);
         --g.depth;
+        if (tempObject && *g.t.level == 1) NoteSlot(v);  // (the calls made: a learning frame's, verify's)
     }
     const uint64_t t1 = __rdtsc();
     c.result = v;
@@ -1904,6 +2029,49 @@ void FinalMerge() {
     }
 }
 
+// an object's vtable, or null where it can't be read
+void* VtableOf(const void* object) {
+    __try {
+        return *static_cast<void* const*>(object);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+}
+
+// [Debug] RecordLeftovers, after the final merge: each stand-in made at the replay, byte by byte. Where the 3D engine
+// didn't change the stand-in (it is as it was handed out: the template), the real object now holds the template's
+// byte; vanilla's would have held what EF_GetObject left in it (its pool slot's last user's). Counted where the two
+// differ, for all objects and for the vegetation's (CVegetation as the render node, +0xF0).
+void CheckLeftovers() {
+    if (!g.vegetationLooked) {
+        g.vegetationLooked = true;
+        if (HMODULE m = GetModuleHandleW(L"Cry3DEngine.dll"))
+            g.vegetationVtable = FindRttiVtable(reinterpret_cast<char*>(m), ".?AVCVegetation@@");
+    }
+    Stats& s = g.st;
+    for (size_t k = 0; k < g.leftoverObject.size(); ++k) {
+        const uint32_t i = g.leftoverObject[k];
+        if (i >= g.replayObjects.size() || i >= g.objects.size() || !g.replayObjects[i]) continue;
+        const uint8_t* const own = g.leftoverBytes.data() + k * kObjectBytes;
+        const uint8_t* const handed = g.bytes.data() + g.leftoverTemplate[k];
+        const uint8_t* const now = static_cast<const uint8_t*>(g.objects[i]);  // the stand-in, as the 3D engine left it
+        void* node = nullptr;
+        std::memcpy(&node, static_cast<const char*>(g.replayObjects[i]) + 0xF0, sizeof node);
+        const bool veg = g.vegetationVtable && node && VtableOf(node) == g.vegetationVtable;
+        ++s.leftObjects;
+        if (veg) ++s.leftVegetation;
+        for (size_t b = 0; b < kObjectBytes; ++b) {
+            if (b >= kObjectIds && b < kObjectIdsEnd) continue;  // (the real object's own ids)
+            if (now[b] != handed[b] || own[b] == handed[b]) continue;
+            ++s.leftDiff[b];
+            if (veg) ++s.leftDiffVeg[b];
+        }
+    }
+    g.leftoverBytes.clear();
+    g.leftoverObject.clear();
+    g.leftoverTemplate.clear();
+}
+
 // the record made for real: EF_StartEf first, each call with its stand-ins' real objects (what the 3D engine wrote
 // into a stand-in merged in before each call, the renderer's fields of the real one kept), the storage the 3D engine
 // filled copied into what the real call hands out, the answers it was given checked; then the final merge
@@ -1912,6 +2080,9 @@ void ReplayOn(char* r) {
     g.replayObjects.clear();
     g.replayAttach.clear();
     g.replaySeen.clear();
+    g.leftoverBytes.clear();  // ([Debug] RecordLeftovers: this replay's stand-ins)
+    g.leftoverObject.clear();
+    g.leftoverTemplate.clear();
     // the record's real objects as they are now: each call's merge takes one back to its state then, and the 3D
     // engine's writes after its last call are put back at the end
     g.liveSaved.clear();
@@ -2028,10 +2199,18 @@ void ReplayOn(char* r) {
         }
         if (c.kind == kGetObject) {
             char* const o = reinterpret_cast<char*>(v);
+            if (o && (c.a[0] & 0xFF)) NoteSlot(v);  // (a temporary object: its pool slot, for the next stand-ins)
             if (o && IsStandIn(c.result)) {  // (it starts as its stand-in did, but its ids: what the 3D engine wrote
                                              // into the stand-in then shows in each merge, a value it wrote equal to
                                              // what was there included)
                 const uint8_t* const rec = g.bytes.data() + c.after;
+                if (g.leftovers) {  // (a diagnostic: the real object's own leftovers, before the stand-in's go in)
+                    const size_t at = g.leftoverBytes.size();
+                    g.leftoverBytes.resize(at + kObjectBytes);
+                    std::memcpy(g.leftoverBytes.data() + at, o, kObjectBytes);
+                    g.leftoverObject.push_back(uint32_t(g.replayObjects.size()));
+                    g.leftoverTemplate.push_back(c.after);
+                }
                 std::memcpy(o, rec, kObjectIds);
                 std::memcpy(o + kObjectIdsEnd, rec + kObjectIdsEnd, kObjectBytes - kObjectIdsEnd);
             }
@@ -2159,6 +2338,14 @@ void TraversalRecord_Install(const wchar_t* moduleName, char* base, const Shadow
                                                   L"OPTIPERF_SHADOW_PREPASS_FLUSH_THREAD_RECORD_OBSERVE", L"off")
                                          .c_str(),
                                      L"on") == 0;
+    // (a diagnostic, not in optiperf.ini: what the stand-ins' template leaves in the real objects, CheckLeftovers)
+    g.leftovers = g.on && _wcsicmp(ConfigString(L"Debug", L"RecordLeftovers", L"OPTIPERF_RECORD_LEFTOVERS", L"off").c_str(),
+                                   L"on") == 0;
+    // (not in optiperf.ini, for comparisons: "template" starts the stand-ins from the template alone, as up to 1.0.0)
+    g.fromSlots = _wcsicmp(ConfigString(L"ShadowPrepass", L"FlushThreadRecordStandIns",
+                                        L"OPTIPERF_SHADOW_PREPASS_FLUSH_THREAD_RECORD_STAND_INS", L"slot")
+                               .c_str(),
+                           L"template") != 0;
     if (RenderGate_Slots() == 0) {
         Log("%ls: traversal record: not installed (it needs FlushThread=overlap: the gate's redirects)", moduleName);
         return;
@@ -2432,6 +2619,21 @@ void TraversalRecord_Install(const wchar_t* moduleName, char* base, const Shadow
         }
     }
     g.installed = true;
+    // the stand-ins' leftovers (StartFromSlot): what EF_GetObject resets, and its temporary pool where it reads it (the
+    // disp32 of `lea reg, [rcx+kRTempPool]` among its first bytes); without it the stand-ins keep the template's
+    BuildResetMask();
+    if (g.on && g.orig[kGetObject]) {
+        uint8_t disp[4];
+        std::memcpy(disp, &kRTempPool, sizeof disp);  // (x64: little-endian, as the disp32 in the code)
+        const uint8_t* const fn = reinterpret_cast<const uint8_t*>(g.orig[kGetObject]);
+        if (IsInCode(base, reinterpret_cast<const char*>(fn), kGetObjectScan))
+            for (size_t i = 0; i + sizeof disp <= kGetObjectScan && !g_tempPoolChecked; ++i)
+                g_tempPoolChecked = std::memcmp(fn + i, disp, sizeof disp) == 0;
+        if (!g_tempPoolChecked)
+            Log("%ls: traversal record: EF_GetObject doesn't read the temporary objects' pool at +0x%X: the stand-ins "
+                "start from the template alone",
+                moduleName, unsigned(kRTempPool));
+    }
     char names[600] = "";
     size_t nu = 0;
     for (int k = 0; k < kCallKinds; ++k) {
@@ -2466,8 +2668,23 @@ void TraversalRecord_Install(const wchar_t* moduleName, char* base, const Shadow
 void TraversalRecord_OnFlushEntry(char* renderer) {
 #ifdef _WIN64
     if (!g.installed || GetCurrentThreadId() != g.main) return;
+    if (FrameProbe_On()) {  // ([Debug] FrameProbe: how this frame's main traversal ran, and where it joined)
+        uint32_t state = 0, join = 0;
+        if (g.madeStart) {
+            state = g.madeKind;
+        } else if (g.recording && g.on && g.beside && (g.answering || g.joined)) {
+            state = 1;
+            const uint64_t now = __rdtsc();
+            const double share = g.joinWhy >= 0 && now > g.traversalStart
+                                     ? double(g.joinAt - g.traversalStart) / double(now - g.traversalStart)
+                                     : 1.0;
+            join = uint32_t((std::min)(1.0, (std::max)(0.0, share)) * 255.0 + 0.5);
+        }
+        FrameProbe_Tag(kProbeTagTraversal | kProbeTagJoin, (state << 8) | (join << 16));
+    }
     const bool was = g.recording;
     g.recording = false;
+    g.madeTraversal = false;  // (the main traversal's temporary objects end here: what follows is the flush's entry's)
     if (g.madeStart) {  // (beside: a traversal made, not recorded, with no flush beside it: its time, for comparison)
         const uint64_t end = __rdtsc();
         g.st.madeTraversalCycles += end > g.madeStart ? end - g.madeStart : 0;
@@ -2531,9 +2748,11 @@ void TraversalRecord_OnFlushEntry(char* renderer) {
             g.answering = false;
             ReplayOn(renderer);
             ++g.st.onFrames;
+            if (g.leftovers) CheckLeftovers();
         } else if (g.joined) {
             FinalMerge();
             ++g.st.onFrames;
+            if (g.leftovers) CheckLeftovers();
         } else {
             g.learnedFog = g.fogBase;
             g.learnedBatch = g.batchStart;
@@ -2674,6 +2893,32 @@ void TraversalRecord_Report(const char* when) {
     }
     Log("traversal record [%s]: the calls that changed the render object they were given: %s", when,
         wu ? writes : "none");
+    if (g.on)
+        Log("traversal record [%s]: the stand-ins' leftovers (what EF_GetObject doesn't reset): from the pool slot the "
+            "last traversal's call of the same rank got %llu, from the template alone %llu%s",
+            when, s.fromSlot, s.fromTemplate,
+            !g_tempPoolChecked ? " (the pool not found: the template alone)"
+            : !g.fromSlots     ? " (FlushThreadRecordStandIns=template: the template alone)"
+                               : "");
+    if (g.leftovers) {  // ([Debug] RecordLeftovers) by 4-byte word: all objects / the vegetation's
+        char left[1800] = "";
+        size_t lu = 0;
+        for (size_t w = 0; w < kObjectBytes / 4; ++w) {
+            uint64_t all = 0, veg = 0;
+            for (size_t b = w * 4; b < w * 4 + 4; ++b) {
+                all = (std::max)(all, s.leftDiff[b]);
+                veg = (std::max)(veg, s.leftDiffVeg[b]);
+            }
+            if (!all) continue;
+            const int n = snprintf(left + lu, sizeof left - lu, " +0x%zX:%llu/%llu", w * 4, all, veg);
+            if (n < 0 || size_t(n) >= sizeof left - lu) break;
+            lu += size_t(n);
+        }
+        Log("traversal record [%s]: RecordLeftovers: stand-ins made at the replay %llu (the vegetation's %llu); the "
+            "words the real object holds from the stand-in's template where the 3D engine didn't change it and the "
+            "object's own leftover differed (word:objects, all/vegetation):%s",
+            when, s.leftObjects, s.leftVegetation, lu ? left : " none");
+    }
     if (g.on) {
         char whys[400] = "";
         size_t yu = 0;

@@ -61,5 +61,9 @@ void ShadowPrepass_ForEachStash(void (*fn)(const sp::Stash& items, void* ctx), v
 // For the light part (light_snapshot.cpp), right before the flush: each such stash's frustum and caster list, by which
 // PrepareDepthMap finds it in the flush, to be replaced by their copies (the stashes are used up by this flush).
 void ShadowPrepass_MapStashes(void (*fn)(char** frustum, void** casterList, void* ctx), void* ctx);
+// For the light part, right before the flush (At=flush): the dirty flags (ShadowMapFrustum +0x86, a byte per GPU) that
+// this flush's PrepareDepthMap will leave in a frustum of the level's shadow-casting lights, as read from the frustum at
+// the flush's entry. False for a frustum the pre-pass didn't meet this flush, or can't tell.
+bool ShadowPrepass_DirtyAfterFlush(const char* frustum, uint8_t* bytes);
 
 }  // namespace optiperf

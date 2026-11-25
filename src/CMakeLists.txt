@@ -56,6 +56,7 @@ set(OPTIPERF_CORE
   optiperf/env_snapshot.cpp
   optiperf/flush_thread.cpp
   optiperf/frame_log.cpp
+  optiperf/frame_probe.cpp
   optiperf/fog_snapshot.cpp
   optiperf/frame_phases.cpp
   optiperf/hooks.cpp

@@ -2118,6 +2118,85 @@ void TestLightRecord() {
     Check(pl.elems[0] == lights[0] && pl.elems[1] == lights[1], "and the others are put back");
 }
 
+// The frustums' dirty flags set at the hand-off as the flush leaves them (light_record.h, Preset), with the next frame
+// beside the flush asking for a map again with the value the flags held at the hand-off (the 3D engine writes 0x3F3F3F3F)
+void TestDirtyPreset() {
+    printf("frustums' dirty flags set at the hand-off\n");
+    namespace lt = optiperf::lt;
+    const uint32_t asked = 0x3F3F3F3Fu, rendered = 0x3F3F3F00u;  // GPU 0's byte first: cleared by a rendered map
+    auto dirty = [](const char* f) {
+        uint32_t v;
+        std::memcpy(&v, f + lt::kFDirty, sizeof v);
+        return v;
+    };
+    auto setDirty = [](char* f, uint32_t v) { std::memcpy(f + lt::kFDirty, &v, sizeof v); };
+    // four directional maps the 3D engine asked for last frame: the flush renders 0-2 and not 3 (the pre-pass predicted
+    // it would); the next frame asks for 0 and 3 again, and 1's neighbour byte (+0x85, a point light's side mask) changes
+    alignas(16) static char frustums[4][lt::kFrustumBytes];
+    for (auto& f : frustums) {
+        std::memset(f, 0, sizeof f);
+        setDirty(f, asked);
+    }
+    // the same as it went before: no flags set at the hand-off
+    alignas(16) static char before[2][lt::kFrustumBytes];
+    for (auto& f : before) {
+        std::memset(f, 0, sizeof f);
+        setDirty(f, asked);
+    }
+
+    lt::Copies F, old;
+    F.Init(8, lt::kFrustumBytes);
+    old.Init(8, lt::kFrustumBytes);
+    for (char* f : frustums) F.Add(f);
+    for (char* f : before) old.Add(f);
+    Check(F.CopyAll() == 4 && old.CopyAll() == 2, "frustums copied");
+    // the hand-off: the flags the flush will leave, set in the originals (not 3's: it predicts what was there)
+    uint8_t leaves[4];
+    std::memcpy(leaves, &rendered, 4);
+    const bool set0 = F.Preset(0, lt::kFDirty, leaves, 4), set1 = F.Preset(1, lt::kFDirty, leaves, 4),
+               set2 = F.Preset(2, lt::kFDirty, leaves, 4);
+    uint8_t same[4];
+    std::memcpy(same, &asked, 4);
+    const bool set3 = F.Preset(3, lt::kFDirty, same, 4);
+    Check(set0 && set1 && set2 && !set3, "set where the flush will change them, not where it won't");
+    Check(dirty(frustums[0]) == rendered && dirty(F.Pristine(0)) == rendered && dirty(F.Copy(0)) == asked,
+          "the original and its pristine copy as after the flush, the copy as the flush has to find it");
+    uint8_t over[8] = {};
+    F.SetField(1, lt::kFCasters, reinterpret_cast<char*>(over));
+    Check(!F.Preset(1, lt::kFCasters - 4, over, 8), "never over the field set for the copies");
+
+    // the flush renders maps 0-2 (clears GPU 0's byte in the copies), and map 2 again wrongly predicted: it leaves 2's
+    // flags as they were (as if it hadn't rendered it)
+    setDirty(F.Copy(0), rendered);
+    setDirty(F.Copy(1), rendered);
+    setDirty(old.Copy(0), rendered);
+    setDirty(old.Copy(1), rendered);
+    // beside it, the next frame asks for maps 0 and 3 again, with the value the flags held at the hand-off, and changes
+    // map 1's side mask byte (in the same word as GPU 0's and 1's flags)
+    setDirty(frustums[0], asked);
+    setDirty(frustums[3], asked);
+    frustums[1][0x85] = 0x21;
+    setDirty(before[0], asked);
+    before[1][0x85] = 0x21;
+
+    size_t kept = 0, oldKept = 0;
+    F.WriteBack(&kept);
+    old.WriteBack(&oldKept);
+    printf("  after the write-back: asked again %08X (before the fix %08X), rendered %08X, not rendered %08X, asked "
+           "again but not rendered %08X\n",
+           dirty(frustums[0]), dirty(before[0]), dirty(frustums[1]), dirty(frustums[2]), dirty(frustums[3]));
+    Check(dirty(before[0]) == rendered, "(before the fix: the next frame's request undone by the flush's write)");
+    Check(dirty(frustums[0]) == asked, "a map asked for again beside the flush stays asked for");
+    Check(dirty(frustums[1]) == rendered && frustums[1][0x85] == 0x21,
+          "a rendered map stays rendered, and the next frame's byte beside its flags stays");
+    Check(dirty(before[1]) == asked && before[1][0x85] == 0x21,
+          "(before the fix: the flush's clear lost where the next frame changed a byte of the same word)");
+    Check(dirty(frustums[2]) == asked, "a wrong prediction: the flags the flush left are written back");
+    Check(dirty(frustums[3]) == asked, "a map the flush didn't render stays asked for");
+    F.Restore();
+    old.Restore();
+}
+
 void TestRangeCopies() {
     printf("range copies\n");
     namespace rc = optiperf::rc;
@@ -2331,6 +2410,7 @@ int wmain(int argc, wchar_t** argv) {
     TestMaterials(dir);
     TestCvars(dir);
     TestLightRecord();
+    TestDirtyPreset();
     TestLightLocate(dir);
     TestRangeCopies();
     TestFlushThread();
