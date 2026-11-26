@@ -14,7 +14,7 @@ A CPU-multithreading mod for Crysis (2007). The game runs its simulation, its sc
 
 In play (4 minutes in Recovery, the same route twice), against the same 64-bit game with only the allocator, which it needs to run at all: **188 fps on average instead of 117** (×1.6), the slowest 1 % of frames at 122 fps instead of 73, and the time under 100 fps down from 35 % to 0.7 %. The scripted benchmarks show less, ×1.45 on average over eight levels: play has more of the frames that the main thread holds back.
 
-Current release: **v1.0.0**
+Current release: **v1.0.1**
 
 ## Compatibility
 
@@ -63,7 +63,7 @@ Needs Visual Studio 2022 or later with the C++ x86/x64 tools (CMake and Ninja co
 After building and testing the plugin, create the two release archives with:
 
 ```powershell
-.\package.ps1 -Version 1.0.0
+.\package.ps1 -Version 1.0.1
 ```
 
 The script builds the Release binaries (`-SkipBuild` packages those already in `build\release`), downloads Ultimate ASI Loader v9.7.4 and checks its pinned hashes, and writes to `dist\` the plugin-only archive and the archive with the loader, each with payload hashes (`SHA256SUMS.txt`) and a `.sha256` file beside it. The loader's notice goes only into its archive; the notices of mimalloc and MinHook, which are linked into the plugin, into both. It refuses to overwrite an existing release archive.
@@ -71,7 +71,7 @@ The script builds the Release binaries (`-SkipBuild` packages those already in `
 ## Install
 
 1. Close Crysis.
-2. Take the archive with the loader (`Crysis-MTO-v1.0.0-with-Ultimate-ASI-Loader-v9.7.4.zip`), unless the game already has an ASI loader in `Bin32` and `Bin64`: then the plugin-only one (`Crysis-MTO-v1.0.0-plugin-only.zip`).
+2. Take the archive with the loader (`Crysis-MTO-v1.0.1-with-Ultimate-ASI-Loader-v9.7.4.zip`), unless the game already has an ASI loader in `Bin32` and `Bin64`: then the plugin-only one (`Crysis-MTO-v1.0.1-plugin-only.zip`).
 3. Extract it into the Crysis folder (the one that contains `Bin32`, `Bin64` and `Game`). `Bin32` and `Bin64` each get `optiperf.asi` and `optiperf.ini`, and from the archive with the loader `version.dll`. If the game already has a loader, don't overwrite it: copy only `optiperf.asi` and `optiperf.ini`. If another mod's `version.dll` isn't an ASI loader, rename this one to `winmm.dll` (both names work).
 4. Start the game as usual. The render thread and the worker threads need the 64-bit game with DX10: GOG Galaxy's Play button starts the 32-bit DX9 game, so choose "Crysis x64 DX10" from its launch options.
 
