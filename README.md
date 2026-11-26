@@ -12,7 +12,7 @@
 
 A CPU-multithreading mod for Crysis (2007). The game runs its simulation, its scene traversal and every Direct3D call on one thread. This mod moves the renderer's work onto a thread of its own, spreads two of the main thread's jobs (the particle emitters' update and the characters' animation) over worker threads, and fixes two engine defects that cost frame rate. It ships as an ASI plugin, `optiperf.asi`, loaded by [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader); no game file is modified.
 
-In play (4 minutes in Recovery, the same route twice), against the same 64-bit game with only the allocator, which it needs to run at all: **188 fps on average instead of 117** (×1.6), the slowest 1 % of frames at 122 fps instead of 73, and the time under 100 fps down from 35 % to 0.7 %. The scripted benchmarks show less, ×1.45 on average over eight levels: play has more of the frames that the main thread holds back.
+In play with v1.0.0 (4 minutes in Recovery, the same route twice), against the same 64-bit game with only the allocator, which it needs to run at all: **188 fps on average instead of 117** (×1.6), the slowest 1 % of frames at 122 fps instead of 73, and the time under 100 fps down from 35 % to 0.7 %. The scripted benchmarks show less, ×1.45 on average over eight levels: play has more of the frames that the main thread holds back. v1.0.1 redraws the sun's shadow maps as often as the original game, which v1.0.0 didn't, and is 4–13 % slower than v1.0.0 in benchmarks for it.
 
 Current release: **v1.0.1**
 
