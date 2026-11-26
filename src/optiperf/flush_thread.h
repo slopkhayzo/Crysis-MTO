@@ -22,6 +22,8 @@
 //                 cache, not processor 0's, two left for the rest). Either way the report says where the two ran at the
 //                 hand-offs (on one physical core, or apart).
 
+#include <cstdint>
+
 namespace optiperf {
 
 // Reads the setting (from the shadow pre-pass's install, with the renderer's base: the CRT is the one it imports, and
@@ -46,6 +48,9 @@ void FlushThread_JoinNow();
 bool FlushThread_Ended();
 // Whether the flush handed off last has ended (its marks are all set; the frame's end may still be on the worker).
 bool FlushThread_FlushEnded();
+// The flush handed off last (overlap and worker): when the worker started it, ended it, and was done with it (its
+// frame's end made too), in rdtsc ticks; for a diagnostic ([Debug] FrameProbe), read after a join.
+void FlushThread_LastTimes(uint64_t* start, uint64_t* end, uint64_t* done);
 // FlushThreadPresent=on, on the main thread beside the flush, from the render queue's taken EndFrame: whether this
 // window's frame's end is still open (the setting on, not sealed yet); then the calls it has taken so far (moved where
 // the worker reads them) are the frame's end, for the worker to make after the flush. False if they aren't the

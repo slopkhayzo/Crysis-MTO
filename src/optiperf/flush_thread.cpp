@@ -141,6 +141,7 @@ struct State {
     int mainLogs = 0;
     bool hangExit = false;              // FlushThreadHangExit=on (tests)
     uint64_t tGo = 0, tStart = 0, tEnd = 0;  // this flush: signalled, started, ended
+    uint64_t tDone = 0;                      // ... and the worker done with it (its frame's end made too)
     // overlap: the flush beside the main thread, its after-flush function, and the calls that joined it
     bool pending = false;
     volatile bool ended = false;  // the worker is done with the flush handed off last (a join won't wait)
@@ -423,6 +424,7 @@ DWORD WINAPI Worker(void*) {
         g.flushEnded = true;
         RenderQueue_OnFlushEnd();  // (its waits beside the flush end too)
         if (g.present) FrameEnd();
+        g.tDone = __rdtsc();
         g.ended = true;
         SetEvent(g.done);
     }
@@ -832,6 +834,16 @@ bool FlushThread_Ended() {
     return g.ended || (g.flushEnded && g.frameEnd == kFrameEndOpen);
 #else
     return true;
+#endif
+}
+
+void FlushThread_LastTimes(uint64_t* start, uint64_t* end, uint64_t* done) {
+#ifdef _WIN64
+    *start = g.tStart;
+    *end = g.tEnd;
+    *done = g.tDone;
+#else
+    *start = *end = *done = 0;
 #endif
 }
 

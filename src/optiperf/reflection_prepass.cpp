@@ -62,6 +62,7 @@
 #include "calltrace.h"
 #include "config.h"
 #include "flush_thread.h"
+#include "frame_probe.h"
 #include "hooks.h"
 #include "log.h"
 #include "render_queue.h"
@@ -238,6 +239,10 @@ constexpr int kQuadSize = 0x38, kQuadFields = 0x31;  // a quad, and the part of 
 // DrawObjSprites (renderer slot 161), its start: nothing unless at level 1
 constexpr const char kDrawSprites[] = "40 55 48 83 EC 40 83 3D ?? ?? ?? ?? 01 48 8B E9 0F 85 ?? ?? ?? ?? F6 81 00 0F 00 00 08";
 constexpr int kDrawSpritesLevel = 0x08;
+// ... its tests on the renderer: +0xF00 bit 3, the z-pass (in the pattern); +0xAF8 bit 3, no sprite z-pass draw. Read
+// for [Debug] FrameProbe's extra 7-10 (frame_probe.h)
+constexpr int kRZPassFlags = 0xF00, kRNoZPassSprites = 0xAF8;
+constexpr int kProbeSpriteZTime = 7, kProbeSpriteState = 9;
 
 // offsets fixed in the patterns above
 // SHRenderTarget, as FX_DrawToRenderTarget reads it
@@ -986,6 +991,24 @@ void RecordFarTreeDraw() {
     g.recordingDraw = false;
     g.drawRecorded = true;
     ++g.st.drawRecorded;
+    if (FrameProbe_On())  // ([Debug] FrameProbe: this flush's sprite draws, from none)
+        for (int k = kProbeSpriteZTime; k <= kProbeSpriteState + 1; ++k) FrameProbe_SetNext(k, 0xFFFFFFFFu);
+}
+
+// [Debug] FrameProbe: a far-tree sprite draw the flush makes, for the present that follows: its time from the flush's
+// start, and the quads then, with DrawObjSprites' tests (the renderer's +0xF00 bit 3: the z-pass; +0xAF8 bit 3: no
+// z-pass draw; drawn at recursion level 1 only)
+void ProbeSpriteDraw() {
+    const bool z = (*reinterpret_cast<const uint8_t*>(g.renderer + kRZPassFlags) & 8) != 0;
+    uint64_t start = 0, end = 0, done = 0;
+    FlushThread_LastTimes(&start, &end, &done);
+    const uint64_t now = __rdtsc();
+    const uint32_t count = g.t.spriteCount ? uint32_t((std::max)(*g.t.spriteCount, 0)) : 0;
+    uint32_t state = 0x80000000u | (std::min)(count, 0xFFFFu);
+    if (ReadU32(g.renderer + kRNoZPassSprites) & 8) state |= 1u << 16;
+    if (*g.shadow->level != 1) state |= 1u << 17;
+    FrameProbe_SetNext(z ? kProbeSpriteZTime : kProbeSpriteZTime + 1, now > start ? uint32_t((now - start) / 3000) : 0);
+    FrameProbe_SetNext(z ? kProbeSpriteState : kProbeSpriteState + 1, state);
 }
 
 // I3DEngine::DrawFarTrees, from CREFarTreeSprites::mfDraw in the flush: the recorded call instead of the 3D engine
@@ -1020,6 +1043,7 @@ void DrawFarTreesHook(void* engine) {
         return;
     }
     ++g.st.drawReplayed;
+    if (FrameProbe_On()) ProbeSpriteDraw();
     g.drawSprites(g.renderer, d.list, d.maxViewDist, d.objManager, d.zoom);
 }
 

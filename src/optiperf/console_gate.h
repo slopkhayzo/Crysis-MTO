@@ -10,5 +10,14 @@ namespace optiperf {
 // From the render queue's install (overlap), CrySystem loaded: the slots patched in its classes' vtables.
 void ConsoleGate_Install();
 void ConsoleGate_Report(const char* when);
+// At each outer flush's entry, on the main thread (any mode). [Debug] Commands (env OPTIPERF_DEBUG_COMMANDS), a test's
+// console commands run after so many flushes, e.g. "300:e_time_of_day 6.3;e_time_of_day_speed 0.02|900:...": counted
+// here (the gate installed at the first, if it isn't), run from the console's Update, as a command typed there.
+void ConsoleGate_OnFlushEntry();
+// What a cvar class's setter slot leads to past the gate: the entry the gate found in the slot when `entry` is one of
+// its hooks, else `entry`. The cvar part patches two of the same classes' setters at the first flush, after the gate
+// (with the render thread on, from its install), and calls on to the gate's hooks; it checks the setters it finds are
+// CrySystem's through this.
+void* ConsoleGate_SetterBehind(void* entry);
 
 }  // namespace optiperf

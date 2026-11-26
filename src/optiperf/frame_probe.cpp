@@ -35,9 +35,11 @@ struct Header {
     char magic[4];
     uint32_t version, cols, rows, patch, width, height, format, ring;
 };
+constexpr int kExtras = 11, kFirstNext = 5;  // extra[5..10] set for the next present (FrameProbe_SetNext)
 struct Record {
     uint32_t seq, tags;
     uint64_t tsc;
+    uint32_t extra[kExtras];
     uint16_t luma[kPatches];
 };
 #pragma pack(pop)
@@ -56,8 +58,11 @@ struct State {
     bool tenBits = false;      // R10G10B10A2
     bool used[kRing] = {};
     uint32_t slotSeq[kRing] = {}, slotTags[kRing] = {};
+    volatile uint32_t slotExtra[kRing][kExtras] = {};
+    volatile uint32_t nextExtra[kExtras] = {};  // (kFirstNext and up: for the next present)
     uint64_t slotTsc[kRing] = {};
     uint32_t seq = 0;
+    volatile int lastSlot = -1;  // the slot the latest present filled
     volatile LONG tags = 0;
     FILE* out = nullptr;
     size_t unflushed = 0;
@@ -118,7 +123,7 @@ void ReleaseTextures() {
 
 void WriteHeader() {
     if (!g.out) return;
-    Header h{{'O', 'P', 'R', 'B'}, 1, kCols, kRows, kPatch, g.width, g.height, uint32_t(g.format), kRing};
+    Header h{{'O', 'P', 'R', 'B'}, 4, kCols, kRows, kPatch, g.width, g.height, uint32_t(g.format), kRing};
     std::fwrite(&h, sizeof h, 1, g.out);
 }
 
@@ -191,6 +196,7 @@ void ReadSlot(int slot) {
     rec.seq = g.slotSeq[slot];
     rec.tags = g.slotTags[slot];
     rec.tsc = g.slotTsc[slot];
+    for (int k = 0; k < kExtras; ++k) rec.extra[k] = g.slotExtra[slot][k];
     for (int i = 0; i < kPatches; ++i) {
         const int cx = (i % kCols) * kPatch, cy = (i / kCols) * kPatch;
         double sum = 0;
@@ -255,6 +261,8 @@ void Sample(IDXGISwapChain* chain) {
     g.slotSeq[slot] = g.seq++;
     g.slotTags[slot] = uint32_t(g.tags);
     g.slotTsc[slot] = __rdtsc();
+    for (int k = 0; k < kExtras; ++k) g.slotExtra[slot][k] = k >= kFirstNext ? g.nextExtra[k] : 0xFFFFFFFFu;
+    g.lastSlot = slot;
     bb->Release();
 }
 
@@ -323,6 +331,27 @@ void FrameProbe_Tag(uint32_t mask, uint32_t value) {
     } while (InterlockedCompareExchange(&g.tags, now, was) != was);
 #else
     (void)mask;
+    (void)value;
+#endif
+}
+
+void FrameProbe_SetNext(int k, uint32_t value) {
+#ifdef _WIN64
+    if (!g.hooked || k < kFirstNext || k >= kExtras) return;
+    g.nextExtra[k] = value;
+#else
+    (void)k;
+    (void)value;
+#endif
+}
+
+void FrameProbe_SetLatest(int k, uint32_t value) {
+#ifdef _WIN64
+    const int slot = g.lastSlot;
+    if (!g.hooked || slot < 0 || k < 0 || k >= kFirstNext) return;
+    g.slotExtra[slot][k] = value;
+#else
+    (void)k;
     (void)value;
 #endif
 }

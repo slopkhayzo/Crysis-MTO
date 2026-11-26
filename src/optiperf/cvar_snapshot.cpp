@@ -7,12 +7,16 @@
 // a CXConsoleVariableIntRef (an int pointing at the owning module's variable: GetIVal, GetFVal) or a
 // CXConsoleVariableString (its text in the object: GetString), both CrySystem's.
 //   - on: the two classes' getter slots (ICVar 1 GetIVal, 2 GetFVal, 3 GetString) are patched in their vtables. A
-//     call from the renderer's code on the main thread inside the flush is answered from that cvar's capture. The
+//     call from the renderer's code on the flush's thread inside the flush is answered from that cvar's capture. The
 //     captures are of the cvars and getters the renderer has asked for inside a flush so far, read right before each
 //     flush (a string copied into a buffer of ours); one asked for the first time is captured then, its one call to
 //     CrySystem, and answered from then on. The setter slots (4 Set(int), 5 Set(float), 6 Set(const char*), 7 ForceSet)
-//     mark the captures out of date when called on the main thread inside the flush: the rest of it reads CrySystem.
-//     Every other call goes to CrySystem.
+//     mark the captures out of date when called on the flush's thread inside the flush: the rest of it reads CrySystem.
+//     Every other call goes to CrySystem. With the render thread on, the console gate (console_gate.h) has patched the
+//     setter slots first: ours call on to its hooks. The 3D engine also writes its own cvars' variables directly, not
+//     through the setters (C3DEngine::RenderPotentialOccluders, Cry3DEngine +0x10D270, sets e_shadows to 0 while it
+//     renders the occluders, right before the next traversal's EF_StartEf, beside the flush): only the capture keeps
+//     the flush from reading such a transient.
 //   - verify: as on, but each answered call also reads CrySystem, compared (a string by its text) and returned.
 // The getters' code is checked by pattern; with any of it different the part stays off.
 //
@@ -34,6 +38,7 @@
 
 #include "calltrace.h"
 #include "config.h"
+#include "console_gate.h"
 #include "diag.h"
 #include "flush_thread.h"
 #include "key_index.h"
@@ -419,9 +424,15 @@ bool CvarSnapshot_Locate(char* sys, CvarTarget* out, const char** why) {
                 return *why = buf, false;
             }
         }
-        for (int i = 0; i < kCvSetters; ++i)
-            if (!IsInCode(sys, Entry(sys, CallTrace_Original(t.vtables[c][kFirstSetter + i])), 1))
+        // (past the console gate's hooks: with the render thread on, the gate patched these slots at its install, and
+        // the setup patches them again and calls on to the gate. Until 2026-11-25 this check refused the gate's hooks,
+        // which left every cvar read of the flush to CrySystem with the render thread on: render-thread.md §12.37)
+        for (int i = 0; i < kCvSetters; ++i) {
+            void* const behind =
+                CallTrace_Original(ConsoleGate_SetterBehind(CallTrace_Original(t.vtables[c][kFirstSetter + i])));
+            if (!IsInCode(sys, Entry(sys, behind), 1))
                 return *why = "a cvar class's setter is not in CrySystem's code", false;
+        }
     }
     *out = t;
     return true;

@@ -579,6 +579,10 @@ struct State {
     // [Debug] RecordLeftovers: each stand-in made at the replay: the real object as EF_GetObject handed it out, its
     // index among the replay's objects, the stand-in's state when it was handed out (in the bytes)
     bool leftovers = false;
+    bool dumpObjects = false;  // [Debug] RecordObjects: the objects handed out beside the flush, in their order, logged
+    uint64_t dumpJoins = 0;
+    int dumps = 0;
+    std::unordered_map<const void*, std::string> statObjNames;
     void* vegetationVtable = nullptr;  // Cry3DEngine's CVegetation, looked up at the first check
     bool vegetationLooked = false;
     std::vector<uint8_t> leftoverBytes;
@@ -811,6 +815,94 @@ void SlotsStart(bool made) {
     g.slotsNow.clear();
     g.tempAnswered = 0;
     g.madeTraversal = made;
+}
+
+// [Debug] RecordObjects: a static object's file name, from its first pointer to a ".cgf" path (read safely; "" if none)
+bool ReadText(const char* p, char* out, size_t n) {
+    __try {
+        size_t i = 0;
+        for (; i + 1 < n; ++i) {
+            const char ch = p[i];
+            if (!ch) break;
+            if (ch < 0x20 || ch > 0x7E) return false;
+            out[i] = ch;
+        }
+        out[i] = 0;
+        return i > 4;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+bool ReadWord(const char* p, const char** out) {
+    __try {
+        std::memcpy(out, p, sizeof *out);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+const std::string& StatObjName(const char* so) {
+    auto it = g.statObjNames.find(so);
+    if (it != g.statObjNames.end()) return it->second;
+    std::string name;
+    for (size_t off = 0; so && off < 0x300 && name.empty(); off += 8) {
+        const char* p = nullptr;
+        if (!ReadWord(so + off, &p) || uintptr_t(p) < 0x10000 || uintptr_t(p) >= 0x7FFFFFFF0000ull) continue;
+        char text[160];
+        if (!ReadText(p, text, sizeof text)) continue;
+        const char* const dot = std::strstr(text, ".cgf");
+        if (!dot && !std::strstr(text, ".CGF")) continue;
+        const char* base = text;
+        for (const char* c = text; *c; ++c)
+            if (*c == '/' || *c == '\\') base = c + 1;
+        name.assign(base, std::strcspn(base, "."));
+    }
+    return g.statObjNames.emplace(so, name).first->second;
+}
+// a render object's static object (+0xF0, as CStatObj::RenderRenderMesh sets it) and matrix (+0x14), read safely
+bool ReadObjectPlace(const char* o, const char** so, float* m) {
+    __try {
+        std::memcpy(so, o + 0xF0, sizeof *so);
+        std::memcpy(m, o + 0x14, 12 * sizeof(float));
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+// the objects this traversal had handed out when it joined (their order, static object and place), every so often
+void DumpObjects() {
+    constexpr uint64_t kEvery = 600;
+    constexpr int kMaxDumps = 12, kPerLine = 24;
+    if (++g.dumpJoins % kEvery != 1 || g.dumps >= kMaxDumps) return;
+    ++g.dumps;
+    char line[2000];
+    size_t n = 0;
+    int k = 0, inLine = 0;
+    const auto flush = [&] {
+        if (n) Log("traversal record: objects handed out beside the flush (dump %d, frame %llu): %s", g.dumps, g.st.frames, line);
+        n = 0;
+        line[0] = 0;
+        inLine = 0;
+    };
+    line[0] = 0;
+    for (const Call& c : g.calls) {
+        if (c.kind != kGetObject || !c.result) continue;
+        const char* const o = reinterpret_cast<const char*>(uintptr_t(c.result));
+        const char* so = nullptr;
+        float m[12] = {};
+        if (!ReadObjectPlace(o, &so, m)) so = nullptr;
+        const std::string& name = StatObjName(so);
+        const int w = snprintf(line + n, sizeof line - n, "%s%d%s:%s(%.0f,%.0f,%.0f)", inLine ? " " : "", k,
+                               (c.a[0] & 0xFF) ? "" : "p", name.empty() ? "?" : name.c_str(), m[3], m[7], m[11]);
+        ++k;
+        if (w < 0 || size_t(w) >= sizeof line - n) {
+            flush();
+            continue;
+        }
+        n += size_t(w);
+        if (++inLine >= kPerLine) flush();
+    }
+    flush();
 }
 
 // at the traversal's start (after EF_StartEf: the lists and pools as it left them)
@@ -2269,7 +2361,21 @@ void Join(JoinWhy why, bool atEnd, uint64_t startedAt) {
     if (g.joined || g.joiningNow) return;
     g.joiningNow = true;
     const uint64_t t0 = startedAt ? startedAt : __rdtsc();
+    const uint32_t answered = uint32_t(g.objectsAnswered), recorded = uint32_t(g.calls.size());
     if (FlushThread_Beside()) FlushThread_JoinNow();  // (beside the flush: it ends first, with its steps after it)
+    // ([Debug] FrameProbe: on the frame the flush beside it drew, whose present has been made by now, how far this
+    // traversal had come beside it)
+    if (g.beside && !atEnd && FrameProbe_On()) {
+        FrameProbe_SetLatest(0, answered);
+        FrameProbe_SetLatest(1, recorded);
+        uint64_t start = 0, end = 0, done = 0;  // (the flush it joined, in microseconds from its start: the reports' 3 GHz)
+        FlushThread_LastTimes(&start, &end, &done);
+        const auto us = [start](uint64_t t) { return t > start ? uint32_t((t - start) / 3000) : 0u; };
+        FrameProbe_SetLatest(2, us(end));
+        FrameProbe_SetLatest(3, us(g.traversalStart));
+        FrameProbe_SetLatest(4, us(done));
+    }
+    if (g.dumpObjects && !atEnd) DumpObjects();
     const uint64_t t1 = __rdtsc();
     if (!atEnd) {
         ++g.st.onJoins;
@@ -2341,6 +2447,9 @@ void TraversalRecord_Install(const wchar_t* moduleName, char* base, const Shadow
     // (a diagnostic, not in optiperf.ini: what the stand-ins' template leaves in the real objects, CheckLeftovers)
     g.leftovers = g.on && _wcsicmp(ConfigString(L"Debug", L"RecordLeftovers", L"OPTIPERF_RECORD_LEFTOVERS", L"off").c_str(),
                                    L"on") == 0;
+    // (a diagnostic, not in optiperf.ini: the objects handed out beside the flush, in order, logged now and then)
+    g.dumpObjects = g.on && _wcsicmp(ConfigString(L"Debug", L"RecordObjects", L"OPTIPERF_RECORD_OBJECTS", L"off").c_str(),
+                                     L"on") == 0;
     // (not in optiperf.ini, for comparisons: "template" starts the stand-ins from the template alone, as up to 1.0.0)
     g.fromSlots = _wcsicmp(ConfigString(L"ShadowPrepass", L"FlushThreadRecordStandIns",
                                         L"OPTIPERF_SHADOW_PREPASS_FLUSH_THREAD_RECORD_STAND_INS", L"slot")

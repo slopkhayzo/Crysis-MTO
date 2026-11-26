@@ -14,8 +14,12 @@
 #include <windows.h>
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <string>
+#include <vector>
 
+#include "config.h"
 #include "flush_thread.h"
 #include "log.h"
 #include "scan.h"
@@ -40,6 +44,10 @@ using NameFn = const char* (*)(void*);
 using ExecuteFn = void (*)(void*, const char*, bool, bool);
 using UpdateFn = void (*)(void*);
 
+struct Pending {  // [Debug] Commands: a command, and the outer flushes after which it runs
+    uint64_t atFlush;
+    std::string command;
+};
 struct State {
     bool installed = false;
     void* orig[kClasses][kSetters] = {};  // the entries found in the slots
@@ -48,8 +56,13 @@ struct State {
     unsigned queued = 0;  // commands queued for the console's Update, since its last
     uint64_t setJoins = 0, commandJoins = 0, updateJoins = 0;
     int loggedNames = 0;
+    bool commandsRead = false;
+    std::vector<Pending> commands;
+    size_t nextCommand = 0;
+    volatile uint64_t flushes = 0;  // outer flushes so far (ConsoleGate_OnFlushEntry)
 };
 State g;
+void ExecuteHook(void* console, const char* command, bool silent, bool defer);
 
 // beside the flush: join it first (a cvar's name logged, the first ones)
 void GateSet(void* var) {
@@ -96,6 +109,12 @@ void ExecuteHook(void* console, const char* command, bool silent, bool defer) {
     reinterpret_cast<ExecuteFn>(g.execute)(console, command, silent, defer);
 }
 void UpdateHook(void* console) {
+    while (g.nextCommand < g.commands.size() && g.commands[g.nextCommand].atFlush <= g.flushes) {
+        const Pending& p = g.commands[g.nextCommand++];  // ([Debug] Commands: as typed in the console, joining first)
+        Log("console gate: [Debug] Commands, after %llu flushes: \"%s\"", static_cast<unsigned long long>(g.flushes),
+            p.command.c_str());
+        ExecuteHook(console, p.command.c_str(), false, false);
+    }
     if (g.queued && FlushThread_Beside()) {  // (it runs the queued commands)
         ++g.updateJoins;
         FlushThread_JoinNow();
@@ -154,6 +173,51 @@ void ConsoleGate_Install() {
     Log("console gate: the setters of CrySystem's six cvar classes, CXConsole's ExecuteString and Update join the "
         "flush first beside it");
 #endif
+}
+
+void ConsoleGate_OnFlushEntry() {
+#ifdef _WIN64
+    if (!g.commandsRead) {
+        g.commandsRead = true;
+        const std::wstring v = ConfigString(L"Debug", L"Commands", L"OPTIPERF_DEBUG_COMMANDS", L"");
+        std::string s;  // (ASCII: console commands)
+        for (const wchar_t ch : v) s.push_back(ch < 0x80 ? char(ch) : '?');
+        size_t at = 0;
+        while (at < s.size()) {  // "N:cmd;cmd|M:cmd"
+            size_t end = s.find('|', at);
+            if (end == std::string::npos) end = s.size();
+            const std::string group = s.substr(at, end - at);
+            const size_t colon = group.find(':');
+            if (colon != std::string::npos) {
+                const uint64_t n = std::strtoull(group.substr(0, colon).c_str(), nullptr, 10);
+                size_t c = colon + 1;
+                while (c <= group.size()) {
+                    size_t semi = group.find(';', c);
+                    if (semi == std::string::npos) semi = group.size();
+                    if (semi > c) g.commands.push_back({n, group.substr(c, semi - c)});
+                    c = semi + 1;
+                }
+            }
+            at = end + 1;
+        }
+        if (!g.commands.empty()) {
+            ConsoleGate_Install();  // (with the render thread off too: its joins are then nothing)
+            Log("console gate: [Debug] Commands: %zu commands, the first after %llu flushes%s", g.commands.size(),
+                static_cast<unsigned long long>(g.commands.front().atFlush),
+                g.installed ? "" : " (not run: the gate isn't installed)");
+        }
+    }
+    ++g.flushes;
+#endif
+}
+
+void* ConsoleGate_SetterBehind(void* entry) {
+#ifdef _WIN64
+    for (int c = 0; c < kClasses; ++c)
+        for (int i = 0; i < kSetters; ++i)
+            if (entry == kClassHooks[c][i] && g.orig[c][i]) return g.orig[c][i];
+#endif
+    return entry;
 }
 
 void ConsoleGate_Report(const char* when) {

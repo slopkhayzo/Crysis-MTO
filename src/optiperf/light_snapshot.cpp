@@ -122,6 +122,16 @@ constexpr int kRFrustum = 0x1788;  // the frustum PrepareDepthMap is drawing (se
 
 using AddLightFn = void (*)(char* renderer, char* light);
 
+// [Debug] LightsDrawCheck (a diagnostic, with Lights=on): the renderer's per-object shadow passes
+// (Renderer:DrawShader_MultiShadow_Passes, +0xB83F0) read the drawn object's frustum list through m_RP.m_pCurObject
+// (+0xA78) at its start; hooked, each call inside the flush checks that list is one of the hand-off's copies.
+const char* const kMultiShadowCode =
+    "48 8B C4 44 89 48 20 4C 89 40 18 48 89 50 10 48 81 EC C8 00 00 00 48 89 58 F8 48 89 68 F0 48 89 70 E8 48 89 78 E0 "
+    "4C 89 60 D8 4C 89 68 D0 4C 89 70 C8 48 8B 81 78 0A 00 00 41 8B E9 4C 8B A0 E8 00 00 00";
+constexpr int kRCurObject = 0xA78;
+using MultiShadowFn = uint64_t (*)(char* renderer, void* a2, void* a3, int a4);
+constexpr int kDrawCheckLogged = 24;
+
 constexpr size_t kMaxLights = 512, kMaxFrustums = 512;  // copied per flush (the lists hold at most 32 lights a level)
 constexpr size_t kArenaBytes = 8u << 20;                // the copied lists
 constexpr uint32_t kMaxListed = 64;                     // a longer light list is not one
@@ -233,8 +243,47 @@ struct State {
     std::vector<char> buffer;                            // verify: what a search reads
     char probe[lt::kFrustumBytes];                       // a frustum read to check it can be
     Stats st;
+    // [Debug] LightsDrawCheck: the per-object shadow passes' calls in the flush, by the drawn object's frustum list
+    // (none, a copy, another: its count then 0 or not), and this flush's others (the probe's tag)
+    MultiShadowFn multiShadow = nullptr;
+    uint64_t dcCalls = 0, dcNone = 0, dcCopies = 0, dcOther = 0, dcOtherEmpty = 0, dcFlushesWithOther = 0;
+    uint32_t dcFlushOther = 0, dcFlushEmpty = 0;
+    int dcLogged = 0;
 };
 State g;
+
+uint64_t MultiShadowHook(char* r, void* a2, void* a3, int a4) {
+    if (g.inFlush && OnFlushThread()) {
+        ++g.dcCalls;
+        char* const obj = lt::Get(r + kRCurObject);
+        const char* const list = obj ? lt::Get(obj + lt::kOFrustums) : nullptr;
+        if (!list) {
+            ++g.dcNone;
+        } else if (g.arena.Contains(list)) {
+            ++g.dcCopies;
+        } else {
+            const uint32_t count = reinterpret_cast<const lt::PtrList*>(list)->count;
+            ++g.dcOther;
+            if (!g.dcFlushOther++) ++g.dcFlushesWithOther;
+            if (!count) {
+                ++g.dcOtherEmpty;
+                ++g.dcFlushEmpty;
+            }
+            FrameProbe_Tag(kProbeTagListsMissed | kProbeTagListsEmpty,
+                           ((std::min)(g.dcFlushOther, 255u) << 24) | ((std::min)(g.dcFlushEmpty, 15u) << 12));
+            if (g.dcLogged < kDrawCheckLogged) {
+                ++g.dcLogged;
+                float m[12];
+                std::memcpy(m, obj + 0x14, sizeof m);
+                Log("lights: [Debug] LightsDrawCheck: flush %llu: object %p (at %.0f,%.0f,%.0f) drawn with frustum list "
+                    "%p, not a copy, holding %u (light %d of its group)",
+                    static_cast<unsigned long long>(g.st.flushes), static_cast<void*>(obj), double(m[3]), double(m[7]),
+                    double(m[11]), static_cast<const void*>(list), count, a4);
+            }
+        }
+    }
+    return g.multiShadow(r, a2, a3, a4);
+}
 
 void AddLightHook(char* r, char* light) {
     g.addLight(r, light);
@@ -685,9 +734,22 @@ void HandOff(char* r) {
     // the flush renders)
     struct SunMaps {
         char* array[lt::kLightFrustums];
-        uint32_t rendered;
-    } sun{{}, 0};
-    if (FrameProbe_On()) SunFrustums(sun.array);
+        uint32_t rendered, items, casters;
+    } sun{{}, 0, 0, 0};
+    if (FrameProbe_On() && SunFrustums(sun.array)) {
+        ShadowPrepass_ForEachStash(
+            [](const sp::Stash& s, void* ctx) {
+                auto* m = static_cast<SunMaps*>(ctx);
+                for (int k = 0; k < lt::kLightFrustums && m->array[k]; ++k)
+                    if (s.frustum == m->array[k]) {
+                        m->items += uint32_t(s.items.size());
+                        m->casters += uint32_t(s.casters > 0 ? s.casters : 0);
+                    }
+            },
+            &sun);
+        FrameProbe_SetNext(5, sun.items);
+        FrameProbe_SetNext(6, sun.casters);
+    }
     ShadowPrepass_MapStashes(
         [](char** frustum, void** casters, void* ctx) {
             auto* s = static_cast<SunMaps*>(ctx);
@@ -868,6 +930,10 @@ void Report(const char* when) {
         "asking for the map again) %llu, %llu of them to the value the flush found",
         when, s.dirtyPreset, double(s.dirtyPreset) / f, s.dirtyAsPredicted, s.dirtyNotPredicted, s.dirtyRewritten,
         s.dirtyAsFound);
+    if (g.multiShadow)
+        Log("lights [%s]: [Debug] LightsDrawCheck: the per-object shadow passes' calls in the flush %llu, the drawn "
+            "object's frustum list: none %llu, a copy %llu, another %llu (empty then %llu), in %llu flushes",
+            when, g.dcCalls, g.dcNone, g.dcCopies, g.dcOther, g.dcOtherEmpty, g.dcFlushesWithOther);
     if (g.mode != LMode::Verify) {
         if (g.words) ReportKind(when, F, f);
         return;
@@ -970,6 +1036,18 @@ void LightSnapshot_Install(const wchar_t* moduleName, char* base, size_t size, c
     g.presetDirty = ReadPresetDirty();
     g.words = g.mode == LMode::On &&
               _wcsicmp(ConfigString(L"Debug", L"LightWords", L"OPTIPERF_LIGHT_WORDS", L"off").c_str(), L"on") == 0;
+    if (g.mode == LMode::On &&
+        _wcsicmp(ConfigString(L"Debug", L"LightsDrawCheck", L"OPTIPERF_LIGHTS_DRAW_CHECK", L"off").c_str(), L"on") == 0) {
+        const std::vector<char*> at = FindInCode(base, ParsePattern(kMultiShadowCode));
+        if (at.size() == 1 && InstallHook(at[0], reinterpret_cast<void*>(&MultiShadowHook),
+                                          reinterpret_cast<void**>(&g.multiShadow), "DrawShader_MultiShadow_Passes"))
+            Log("%ls: lights: [Debug] LightsDrawCheck: the per-object shadow passes (+0x%X) check the drawn objects' "
+                "frustum lists",
+                moduleName, unsigned(at[0] - base));
+        else
+            Log("%ls: lights: [Debug] LightsDrawCheck not on: the per-object shadow passes found %zu times", moduleName,
+                at.size());
+    }
     g.installed = true;
     Log("%ls: lights: mode=%s, EF_ADDDlight +0x%X, CDLight constructor +0x%X (600 bytes; shadow frustums 0x388); "
         "the shadow maps' dirty flags %s; recording starts after the first flush",
@@ -994,6 +1072,10 @@ void LightSnapshot_BeforeFlush(char* r) {
     ++g.st.flushes;
     g.renderer = r;
     HandOff(r);
+    if (g.multiShadow) {  // ([Debug] LightsDrawCheck: this flush's count, from none)
+        g.dcFlushOther = g.dcFlushEmpty = 0;
+        FrameProbe_Tag(kProbeTagListsMissed | kProbeTagListsEmpty, 0);
+    }
     if (g.mode == LMode::Verify) FindMissed(r);
     g.active = g.inFlush = true;
     g.st.copyCycles += __rdtsc() - t0;

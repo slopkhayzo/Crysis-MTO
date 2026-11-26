@@ -53,6 +53,7 @@
 #include "anim_update.h"
 #include "calltrace.h"
 #include "census.h"
+#include "console_gate.h"
 #include "engine_data.h"
 #include "config.h"
 #include "cvar_snapshot.h"
@@ -1244,6 +1245,7 @@ void EndEf3DHook(char* r, int flags) {
         ParticleUpdate_FlushEntry(r);    // (set up at the second flush)
         FlushThread_OnEntry();           // (the flush's thread, known to the hand-off below)
         FrameProbe_OnFlush(r);           // (a diagnostic, [Debug] FrameProbe: installed at the first flush)
+        ConsoleGate_OnFlushEntry();      // (a test's [Debug] Commands, counted in flushes)
         TraversalRecord_OnFlushEntry(r);  // (verify: the traversal's producer calls replayed and compared)
         Allocator_BeginPins();           // (FlushThread=overlap: what the parts will write after the flush, kept)
         FramePhases_FlushEntry();        // (a diagnostic: optiperf's work before the flush, then the flush, timed)
