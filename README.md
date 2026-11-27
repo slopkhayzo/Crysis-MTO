@@ -25,6 +25,8 @@ Crysis 1.2.1 (build 6156) for Windows: the 32-bit game (`Bin32`) and the 64-bit 
 | GOG | Reference build: benchmarked on eight levels, played from the first level through Assault |
 | Steam | Same version number; not tested yet |
 
+**[CryMP's client](https://github.com/crymp-net/crymp-client)**, the community's multiplayer client (v27 tested), works from the release after v1.0.1; v1.0.1 can crash under it with the render thread on. Install the mod as below and start `CryMP-Client64.exe` as usual (DX10, its default on Windows 10). Everything works as with the game's own launcher, except the particle emitters' worker threads: CryMP brings its own physics and sound, so those stay on the main thread by themselves (`optiperf.log` says so). Against CryMP without the mod, in the benchmarks: Contact ×1.5 (153 to 229 fps), Recovery ×1.32 (87 to 114 fps). `CryMP-Client32.exe` gets the particle fix and the allocator, as the 32-bit game does.
+
 There are no version or hash checks. Before installing a hook, each part finds the game code it changes by its byte pattern and verifies it: offsets read from the matched code must agree wherever they appear, and the functions it calls are matched by their own patterns. If anything differs, only that part stays off, `optiperf.log` says why, and the game runs as usual. The release notes list the SHA-256 of the reference build's files that the supplied settings change. Mods that replace `CryGame.dll` (most single-player mods) haven't been tested with this version.
 
 ## What it does
@@ -73,7 +75,7 @@ The script builds the Release binaries (`-SkipBuild` packages those already in `
 1. Close Crysis.
 2. Take the archive with the loader (`Crysis-MTO-v1.0.1-with-Ultimate-ASI-Loader-v9.7.4.zip`), unless the game already has an ASI loader in `Bin32` and `Bin64`: then the plugin-only one (`Crysis-MTO-v1.0.1-plugin-only.zip`).
 3. Extract it into the Crysis folder (the one that contains `Bin32`, `Bin64` and `Game`). `Bin32` and `Bin64` each get `optiperf.asi` and `optiperf.ini`, and from the archive with the loader `version.dll`. If the game already has a loader, don't overwrite it: copy only `optiperf.asi` and `optiperf.ini`. If another mod's `version.dll` isn't an ASI loader, rename this one to `winmm.dll` (both names work).
-4. Start the game as usual. The render thread and the worker threads need the 64-bit game with DX10: GOG Galaxy's Play button starts the 32-bit DX9 game, so choose "Crysis x64 DX10" from its launch options.
+4. Start the game as usual, or CryMP's `CryMP-Client64.exe` (see [Compatibility](#compatibility)). The render thread and the worker threads need the 64-bit game with DX10: GOG Galaxy's Play button starts the 32-bit DX9 game, so choose "Crysis x64 DX10" from its launch options.
 
 The plugin writes `optiperf.log` beside `optiperf.asi`: what was patched, why a part stayed off, and, if the game crashes or shows an error, where.
 
