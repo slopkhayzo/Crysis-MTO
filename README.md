@@ -12,9 +12,9 @@
 
 A CPU-multithreading mod for Crysis (2007). The game runs its simulation, its scene traversal and every Direct3D call on one thread. This mod moves the renderer's work onto a thread of its own, spreads two of the main thread's jobs (the particle emitters' update and the characters' animation) over worker threads, and fixes two engine defects that cost frame rate. It ships as an ASI plugin, `optiperf.asi`, loaded by [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader); no game file is modified.
 
-In play with v1.0.0 (4 minutes in Recovery, the same route twice), against the same 64-bit game with only the allocator, which it needs to run at all: **188 fps on average instead of 117** (×1.6), the slowest 1 % of frames at 122 fps instead of 73, and the time under 100 fps down from 35 % to 0.7 %. The scripted benchmarks show less, ×1.45 on average over eight levels: play has more of the frames that the main thread holds back. v1.0.1 redraws the sun's shadow maps as often as the original game, which v1.0.0 didn't, and is 4–13 % slower than v1.0.0 in benchmarks for it.
+In play with v1.0.0 (4 minutes in Recovery, the same route twice), against the same 64-bit game with only the allocator, which it needs to run at all: **188 fps on average instead of 117** (×1.6), the slowest 1 % of frames at 122 fps instead of 73, and the time under 100 fps down from 35 % to 0.7 %. The scripted benchmarks show less, ×1.45 on average over eight levels: play has more of the frames that the main thread holds back. Since v1.0.1 the mod redraws the sun's shadow maps as often as the original game, which v1.0.0 didn't, and is 4–13 % slower than v1.0.0 in benchmarks for it.
 
-Current release: **v1.0.1**
+Current release: **v1.0.2**
 
 ## Compatibility
 
@@ -25,7 +25,7 @@ Crysis 1.2.1 (build 6156) for Windows: the 32-bit game (`Bin32`) and the 64-bit 
 | GOG | Reference build: benchmarked on eight levels, played from the first level through Assault |
 | Steam | Same version number; not tested yet |
 
-**[CryMP's client](https://github.com/crymp-net/crymp-client)**, the community's multiplayer client (v27 tested), works from the release after v1.0.1; v1.0.1 can crash under it with the render thread on. Install the mod as below and start `CryMP-Client64.exe` as usual (DX10, its default on Windows 10). Everything works as with the game's own launcher, except the particle emitters' worker threads: CryMP brings its own physics and sound, so those stay on the main thread by themselves (`optiperf.log` says so). Against CryMP without the mod, in the benchmarks: Contact ×1.5 (153 to 229 fps), Recovery ×1.32 (87 to 114 fps). `CryMP-Client32.exe` gets the particle fix and the allocator, as the 32-bit game does.
+**[CryMP's client](https://github.com/crymp-net/crymp-client)**, the community's multiplayer client (v27 tested), works from v1.0.2; v1.0.1 can crash under it with the render thread on. Install the mod as below and start `CryMP-Client64.exe` as usual (DX10, its default on Windows 10). Everything works as with the game's own launcher, except the particle emitters' worker threads: CryMP brings its own physics and sound, so those stay on the main thread by themselves (`optiperf.log` says so). Against CryMP without the mod, in the benchmarks: Contact ×1.5 (153 to 229 fps), Recovery ×1.32 (87 to 114 fps). `CryMP-Client32.exe` gets the particle fix and the allocator, as the 32-bit game does.
 
 There are no version or hash checks. Before installing a hook, each part finds the game code it changes by its byte pattern and verifies it: offsets read from the matched code must agree wherever they appear, and the functions it calls are matched by their own patterns. If anything differs, only that part stays off, `optiperf.log` says why, and the game runs as usual. The release notes list the SHA-256 of the reference build's files that the supplied settings change. Mods that replace `CryGame.dll` (most single-player mods) haven't been tested with this version.
 
@@ -65,7 +65,7 @@ Needs Visual Studio 2022 or later with the C++ x86/x64 tools (CMake and Ninja co
 After building and testing the plugin, create the two release archives with:
 
 ```powershell
-.\package.ps1 -Version 1.0.1
+.\package.ps1 -Version 1.0.2
 ```
 
 The script builds the Release binaries (`-SkipBuild` packages those already in `build\release`), downloads Ultimate ASI Loader v9.7.4 and checks its pinned hashes, and writes to `dist\` the plugin-only archive and the archive with the loader, each with payload hashes (`SHA256SUMS.txt`) and a `.sha256` file beside it. The loader's notice goes only into its archive; the notices of mimalloc and MinHook, which are linked into the plugin, into both. It refuses to overwrite an existing release archive.
@@ -73,7 +73,7 @@ The script builds the Release binaries (`-SkipBuild` packages those already in `
 ## Install
 
 1. Close Crysis.
-2. Take the archive with the loader (`Crysis-MTO-v1.0.1-with-Ultimate-ASI-Loader-v9.7.4.zip`), unless the game already has an ASI loader in `Bin32` and `Bin64`: then the plugin-only one (`Crysis-MTO-v1.0.1-plugin-only.zip`).
+2. Take the archive with the loader (`Crysis-MTO-v1.0.2-with-Ultimate-ASI-Loader-v9.7.4.zip`), unless the game already has an ASI loader in `Bin32` and `Bin64`: then the plugin-only one (`Crysis-MTO-v1.0.2-plugin-only.zip`).
 3. Extract it into the Crysis folder (the one that contains `Bin32`, `Bin64` and `Game`). `Bin32` and `Bin64` each get `optiperf.asi` and `optiperf.ini`, and from the archive with the loader `version.dll`. If the game already has a loader, don't overwrite it: copy only `optiperf.asi` and `optiperf.ini`. If another mod's `version.dll` isn't an ASI loader, rename this one to `winmm.dll` (both names work).
 4. Start the game as usual, or CryMP's `CryMP-Client64.exe` (see [Compatibility](#compatibility)). The render thread and the worker threads need the 64-bit game with DX10: GOG Galaxy's Play button starts the 32-bit DX9 game, so choose "Crysis x64 DX10" from its launch options.
 

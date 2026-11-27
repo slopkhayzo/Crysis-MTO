@@ -12,6 +12,12 @@ Crysis 1.2.1 (build 6156) for Windows: the 32-bit game (Bin32) and the 64-bit ga
 with the GOG release; the Steam release has the same version number but hasn't been tested. The 64-bit game needs
 Windows 10 or later. The release notes list the SHA-256 of the tested build's files that the mod changes.
 
+CryMP's client (the community's multiplayer client, https://github.com/crymp-net/crymp-client; v27 tested)
+works from v1.0.2: install the mod the same way and start CryMP-Client64.exe. Everything works as with the game's
+own executable, except the particle emitters' worker threads, which stay off by themselves (CryMP brings its own
+physics and sound). CryMP-Client32.exe gets the particle fix and the allocator, as the 32-bit game does. Versions
+before 1.0.2 can crash under it with the render thread on.
+
 There are no version or hash checks. Before changing anything, each part of the mod finds the game code it changes
 by its byte pattern and checks it. If something differs (another mod changed it, a different game version), that
 part stays off, optiperf.log says why, and the game runs as usual. Mods that replace CryGame.dll (most
@@ -38,9 +44,10 @@ Other ASI plugins can share the loader: they go next to optiperf.asi.
 
 For either installation:
 1. Close Crysis before copying files.
-2. Start the game as usual (GOG Galaxy, Steam or Crysis.exe). The render thread and the worker threads need the
-   64-bit game with DX10. GOG Galaxy's Play button starts the 32-bit DX9 game: choose "Crysis x64 DX10" from its
-   launch options instead. The 32-bit game and DX9 get the particle fix and the allocator only.
+2. Start the game as usual (GOG Galaxy, Steam or Crysis.exe, or CryMP's CryMP-Client64.exe). The render thread and
+   the worker threads need the 64-bit game with DX10. GOG Galaxy's Play button starts the 32-bit DX9 game: choose
+   "Crysis x64 DX10" from its launch options instead. The 32-bit game and DX9 get the particle fix and the
+   allocator only.
 
 Usage
 -----
@@ -82,7 +89,9 @@ The plugin writes optiperf.log beside optiperf.asi: what was patched, why a part
 crashes or shows an error, where (with the engine's call chain). Check it if the mod doesn't seem to work. With
 any game it should say "particle batch fix installed" and "allocator replaced by mimalloc"; with the 64-bit game
 in DX10 also "flush thread: overlap" and, once a level is running, "the outer flush runs on a worker", "the main
-thread on core", "particle update: mode=on" and "anim update: mode=on".
+thread on core", "particle update: mode=on" and "anim update: mode=on". Under CryMP's client the allocator's line
+reads "its six replaced by mimalloc" instead, and the particle update says later that it is off ("physics or sound
+comes from another module than the game's own").
 
 Uninstallation
 --------------

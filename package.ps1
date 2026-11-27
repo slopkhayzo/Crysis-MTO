@@ -13,7 +13,7 @@
   (the release's zips and the DLLs taken from them).
   -SkipBuild packages the binaries already in build\release (the ones tested, when only the packaging changed).
 .EXAMPLE
-  .\package.ps1 -Version 1.0.1
+  .\package.ps1 -Version 1.0.2
 #>
 param(
     [Parameter(Mandatory)][string]$Version,

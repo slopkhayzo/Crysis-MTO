@@ -45,7 +45,7 @@ Needs Visual Studio 2022+ with the C++ x86/x64 tools (CMake and Ninja come with 
 .\build\x64\allocator_test.exe             # allocator outside the game: layout, realloc, x64 below-4 GB guarantee, pins, the executable's mode
 .\build\x86\calltrace_test.exe             # call tracer outside the game (x64: build\x64\...)
 .\build\x64\shadow_prepass_test.exe        # Phase 2: list handling, vtable counter, its code in Bin64's renderer and 3D engine
-.\package.ps1 -Version 1.0.1               # Release build + dist\Crysis-MTO-v1.0.1-plugin-only.zip and
+.\package.ps1 -Version 1.0.2               # Release build + dist\Crysis-MTO-v1.0.2-plugin-only.zip and
                                            # -with-Ultimate-ASI-Loader-v9.7.4.zip (-SkipBuild: the binaries in build\release)
 ```
 
