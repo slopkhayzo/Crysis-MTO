@@ -106,6 +106,14 @@ bool IsInCode(char* base, const char* address, size_t length) {
     return inside;
 }
 
+bool IsInAnyCode(const void* address) {
+    HMODULE module = nullptr;
+    if (!address || !GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                        static_cast<LPCWSTR>(address), &module))
+        return false;
+    return IsInCode(reinterpret_cast<char*>(module), static_cast<const char*>(address), 1);
+}
+
 bool IsInImage(char* base, const char* address, size_t length) {
     bool inside = false;
     ForEachSection(base, 0, [&](char* start, size_t size) {

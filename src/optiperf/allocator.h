@@ -38,5 +38,15 @@ bool Allocator_TestSetup(size_t lowMemoryMb, bool owners = false);
 void* Allocator_TestMalloc(size_t size, size_t* allocated);
 size_t Allocator_TestFree(void* p);
 void* Allocator_TestRealloc(void* p, size_t size, size_t* allocated);
+// ... and the executable's mode (a launcher's own six memory functions, such as CryMP's client's): the given functions
+// stand for its CryGetMemSize, CryFree and CrySystemCrtFree, for its blocks from before; ours zero-filled from here on
+void Allocator_TestExeMode(size_t (*getMemSize)(void*, size_t), size_t (*freeFn)(void*), void (*crtFree)(void*));
+size_t Allocator_TestGetMemSize(void* p);
+void* Allocator_TestCrtMalloc(size_t size);
+void Allocator_TestCrtFree(void* p);
+// ... and the executable's heap imports' hooks (its CRT's free, realloc and _msize), on the process heap
+bool Allocator_TestHeapFree(void* p);
+void* Allocator_TestHeapReAlloc(void* p, size_t size, bool inPlaceOnly);
+size_t Allocator_TestHeapSize(void* p);
 
 }  // namespace optiperf

@@ -447,9 +447,15 @@ void Setup() {
     }
     auto* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(base + reinterpret_cast<IMAGE_DOS_HEADER*>(base)->e_lfanew);
     const size_t size = nt->OptionalHeader.SizeOfImage;
+    // (the vtables run as long as their slots lead into code: CrySystem's, or another module's that has put its own
+    // functions into some, as CryMP's client into CSystem's Warning and GetLocalizationManager)
+    auto slotsOf = [](void** vt) {
+        int n = 0;
+        while (n < kMaxSlots && IsInAnyCode(CallTrace_Original(vt[n]))) ++n;
+        return n;
+    };
     void** svt = *static_cast<void***>(system);
-    int sslots = 0;
-    while (sslots < kMaxSlots && IsInCode(base, static_cast<const char*>(CallTrace_Original(svt[sslots])), 1)) ++sslots;
+    const int sslots = slotsOf(svt);
     // the timer, through the system's own GetITimer (checked first)
     void* timer = nullptr;
     char* getTimer = sslots > 57 ? static_cast<char*>(CallTrace_Original(svt[57])) : nullptr;
@@ -461,8 +467,7 @@ void Setup() {
         return;
     }
     void** tvt = *static_cast<void***>(timer);
-    int tslots = 0;
-    while (tslots < kMaxSlots && IsInCode(base, static_cast<const char*>(CallTrace_Original(tvt[tslots])), 1)) ++tslots;
+    const int tslots = slotsOf(tvt);
     SysGetter found[kSysGetters];
     const int n = SysSnapshot_Locate(base, svt, sslots, tvt, tslots, found);
     if (n <= 0) {
@@ -473,7 +478,7 @@ void Setup() {
     g.object[kSysTimer] = timer;
     const int slots[kSysObjects] = {sslots, tslots};
     for (int o = 0; o < kSysObjects; ++o)
-        if (!g.counter[o].Init(g.object[o], base, size, slots[o]) || g.counter[o].Slots() != slots[o]) {
+        if (!g.counter[o].Init(g.object[o], base, size, slots[o], true) || g.counter[o].Slots() != slots[o]) {
             Log("system snapshot: off: could not copy the %s vtable", kObjectNames[o]);
             return;
         }

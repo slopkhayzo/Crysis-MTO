@@ -117,6 +117,8 @@ constexpr const char kVisEnvironUpdate[] =
 constexpr unsigned kUpdateSlot = 12;     // CParticleEmitter::Update, as the loop calls it
 constexpr unsigned kGetCameraSlot = 44;  // IRenderer::GetCamera (Mod SDK)
 constexpr size_t kProfilerOn = 0xD3;     // gEnv's bProfilerEnabled (CPartManager::Update reads it there)
+// gEnv's pSoundSystem and pPhysicalWorld (SSystemGlobalEnvironment, x64: the same layout as bProfilerEnabled's)
+constexpr size_t kEnvSoundSystem = 0x48, kEnvPhysicalWorld = 0x58;
 
 constexpr uint32_t kMinBatch = 8;
 constexpr uint32_t kChunk = 4;  // emitters a claim
@@ -597,7 +599,20 @@ void Setup(void* renderer) {
     for (const SerialClass& c : kClasses) {
         if (why) break;
         char* const module = reinterpret_cast<char*>(GetModuleHandleW(c.module));
-        if (!module) continue;  // (not loaded: nothing of it can be called)
+        if (!module) {
+            // Not loaded: nothing of it can be called, unless another module provides what it would (CryMP's client
+            // has physics and sound of its own, in its executable): then its calls couldn't be serialized
+            const size_t field = _wcsicmp(c.module, L"CryPhysics.dll") == 0       ? kEnvPhysicalWorld
+                                 : _wcsicmp(c.module, L"CrySoundSystem.dll") == 0 ? kEnvSoundSystem
+                                                                                    : 0;
+            if (field && *reinterpret_cast<void* const*>(*g.genv + field)) {
+                why = "physics or sound comes from another module than the game's own";
+                Log("particle update: %ls isn't loaded, but the engine has its interface from another module (a "
+                    "replacement's, such as CryMP's client's own): its calls can't be serialized",
+                    c.module);
+            }
+            continue;
+        }
         void** const vt = FindRttiVtable(module, c.mangled);
         const int slots = vt ? Slots(module, vt) : 0;
         if (!slots) {

@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <malloc.h>
 #include <random>
 #include <thread>
 #include <vector>
@@ -149,11 +150,73 @@ int wmain(int argc, wchar_t** argv) {
                pinned, dying, movedHere, movedThere, ended);
     }
 #endif
+    // the executable's mode (a launcher's own memory functions, as CryMP's client exports): its blocks from before are
+    // the CRT heap's (stood for here by malloc), ours zero-filled from now on, as its were
+    static int foreignFreed = 0, foreignCrtFreed = 0;
+    optiperf::Allocator_TestExeMode([](void* p, size_t) -> size_t { return _msize(p); },
+                                    [](void* p) -> size_t {
+                                        const size_t n = _msize(p);
+                                        ++foreignFreed;
+                                        free(p);
+                                        return n;
+                                    },
+                                    [](void* p) {
+                                        ++foreignCrtFreed;
+                                        free(p);
+                                    });
+    auto allZero = [](const char* p, size_t from, size_t to) {
+        for (size_t i = from; i < to; ++i)
+            if (p[i]) return false;
+        return true;
+    };
+    auto* e1 = static_cast<char*>(optiperf::Allocator_TestMalloc(4096, nullptr));
+    std::memset(e1, 0xAB, 4096);
+    optiperf::Allocator_TestFree(e1);
+    auto* e2 = static_cast<char*>(optiperf::Allocator_TestMalloc(4096, nullptr));  // (likely e1's memory again)
+    const bool zeroed = e2 && allZero(e2, 0, 4096);
+    std::memset(e2, 0x11, 100);
+    auto* e3 = static_cast<char*>(optiperf::Allocator_TestRealloc(e2, 50000, nullptr));
+    const bool grown = e3 && uint8_t(e3[99]) == 0x11 && allZero(e3, 100, 50000) &&
+                       optiperf::Allocator_TestGetMemSize(e3) == 50000;
+    auto* f = static_cast<char*>(malloc(300));
+    std::memset(f, 0x22, 300);
+    auto* f2 = static_cast<char*>(optiperf::Allocator_TestRealloc(f, 1000, nullptr));
+    const bool moved = f2 && foreignFreed == 1 && uint8_t(f2[299]) == 0x22 && allZero(f2, 300, 1000);
+    auto* g = static_cast<char*>(malloc(77));
+    const bool sizes = optiperf::Allocator_TestGetMemSize(g) == _msize(g) && optiperf::Allocator_TestGetMemSize(f2) == 1000;
+    optiperf::Allocator_TestCrtFree(g);  // (its own: freed by its CRT free)
+    auto* c = static_cast<char*>(optiperf::Allocator_TestCrtMalloc(64));
+    const bool crt = c && allZero(c, 0, 64) && foreignCrtFreed == 1;
+    optiperf::Allocator_TestCrtFree(c);
+    optiperf::Allocator_TestFree(e3);
+    optiperf::Allocator_TestFree(f2);
+    // its CRT's free, realloc and _msize (the heap imports' hooks): ours to the allocator, the heap's own to Windows
+    auto* h1 = static_cast<char*>(optiperf::Allocator_TestMalloc(77, nullptr));
+    std::memset(h1, 0x33, 77);
+    const bool heapSize = optiperf::Allocator_TestHeapSize(h1) == 77;
+    const bool inPlace = optiperf::Allocator_TestHeapReAlloc(h1, 200, true) == nullptr;
+    auto* h2 = static_cast<char*>(optiperf::Allocator_TestHeapReAlloc(h1, 3000, false));
+    const bool heapRealloc = h2 && uint8_t(h2[76]) == 0x33 && allZero(h2, 77, 3000) &&
+                             optiperf::Allocator_TestGetMemSize(h2) == 3000;
+    const bool heapFree = h2 && optiperf::Allocator_TestHeapFree(h2);
+    void* const w = HeapAlloc(GetProcessHeap(), 0, 100);  // (the heap's own block: on to Windows)
+    void* const w2 = w && optiperf::Allocator_TestHeapSize(w) == HeapSize(GetProcessHeap(), 0, w)
+                         ? optiperf::Allocator_TestHeapReAlloc(w, 5000, false)
+                         : nullptr;
+    const bool windows = w2 && HeapSize(GetProcessHeap(), 0, w2) == 5000 && optiperf::Allocator_TestHeapFree(w2);
+    const bool heapOk = heapSize && inPlace && heapRealloc && heapFree && windows;
+    const bool exeOk = zeroed && grown && moved && sizes && crt && foreignCrtFreed == 1 && heapOk;
+    printf("the executable's mode: zero-filled %d, grown zero-filled %d, its block moved %d, sizes %d, CRT pair %d\n", zeroed,
+           grown, moved, sizes, crt);
+    printf("its CRT's heap functions: HeapSize %d, not in place %d, HeapReAlloc %d, HeapFree %d, the heap's own block %d\n",
+           heapSize, inPlace, heapRealloc, heapFree, windows);
+
     optiperf::Allocator_Report("test");
     printf("%zu blocks live at the peak, %.0f MB, %lu ms: %llu failures, %llu blocks above 4 GB\n", live.size(),
            total / 1048576.0, ms, failures, above4g);
     printf("owner tags: %llu blocks looked up from inside, %llu wrong\n", ownerChecks, ownerFailures);
-    const bool ok = failures == 0 && above4g == 0 && ownerFailures == 0 && (!owners || ownerChecks > 0) && pinsOk;
+    const bool ok =
+        failures == 0 && above4g == 0 && ownerFailures == 0 && (!owners || ownerChecks > 0) && pinsOk && exeOk;
     printf(ok ? "OK\n" : "FAILED\n");
     optiperf::LogClose();
     return ok ? 0 : 1;

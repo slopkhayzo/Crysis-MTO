@@ -26,10 +26,16 @@ inline volatile uint8_t g_vtableCountingOff = 0;
 // other threads calling meanwhile go through the thunks too.
 class VtableCounter {
 public:
-    bool Init(void* object, char* moduleBase, size_t moduleSize, int maxSlots) {
+    // The vtable runs as long as its slots lead into the module's code, or with anyModule into any loaded module's (a
+    // vtable another module has put some of its own functions into: CryMP's client's, CSystem's).
+    bool Init(void* object, char* moduleBase, size_t moduleSize, int maxSlots, bool anyModule = false) {
         void** vt = *static_cast<void***>(object);
         int n = 0;
-        while (n < maxSlots && IsInCode(moduleBase, static_cast<const char*>(CallTrace_Original(vt[n])), 1)) ++n;
+        while (n < maxSlots) {
+            const char* target = static_cast<const char*>(CallTrace_Original(vt[n]));
+            if (!IsInCode(moduleBase, target, 1) && !(anyModule && IsInAnyCode(target))) break;
+            ++n;
+        }
         if (n == 0) return false;
         const size_t code = (size_t(n) * kThunk + 0xFFF) & ~size_t(0xFFF);
         const size_t data = 48 + size_t(n) * 32 + size_t(n + 1) * 8;

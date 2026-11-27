@@ -26,6 +26,9 @@ std::vector<char*> FindInRange(char* start, size_t size, const Pattern& p, size_
 
 // Executable section range containing `address`, for bounds checks on code we follow (call targets, etc.).
 bool IsInCode(char* moduleBase, const char* address, size_t length);
+// Whether `address` is in an executable section of any loaded module: where a vtable's slots end, when another module
+// may have hooked some of them (CryMP's client puts its own functions into CSystem's)
+bool IsInAnyCode(const void* address);
 // Any section of the module, for globals and constants that code refers to.
 bool IsInImage(char* moduleBase, const char* address, size_t length);
 
