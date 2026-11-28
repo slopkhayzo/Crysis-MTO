@@ -8,9 +8,22 @@ plugin (optiperf.asi); no game file is modified.
 
 Supported game builds
 ---------------------
-Crysis 1.2.1 (build 6156) for Windows: the 32-bit game (Bin32) and the 64-bit game (Bin64), DX9 and DX10. Tested
-with the GOG release; the Steam release has the same version number but hasn't been tested. The 64-bit game needs
-Windows 10 or later. The release notes list the SHA-256 of the tested build's files that the mod changes.
+Crysis 1.2.1 (build 6156) for Windows: the 32-bit game (Bin32) and the 64-bit game (Bin64), DX9 and DX10. Played
+and benchmarked with the GOG release; the Steam release has the same game files and was tested with benchmarks
+(below). The 64-bit game needs Windows 10 or later. The release notes list the SHA-256 of the tested build's files
+that the mod changes.
+
+The Steam release comes with Crytek's original launchers instead of C1-Launcher, which the GOG release ships:
+* With them, the ASI loader needs version.ini beside version.dll (in the archive with the loader since v1.0.3):
+  without it, the loader never loads the plugin and there is no optiperf.log. With a loader of your own (Ultimate
+  ASI Loader), set DontLoadFromDllMain=0 under [GlobalSets] in its ini.
+* Steam's Play button asks which launch option to start: "Play Crysis" is the 32-bit game (Bin32\Crysis.exe),
+  which gets the particle fix and the allocator only.
+* The unnamed option below it is the 64-bit game, which crashed about 10 seconds after it started in our tests,
+  with or without this mod, and the same with crysis64.exe started directly: a SecuROM check in the 64-bit
+  CrySystem.dll fails and turns on the processor's floating-point exceptions. C1-Launcher
+  (https://github.com/ccomrade/c1-launcher) skips that check: replace Bin32\Crysis.exe and Bin64\Crysis.exe with
+  its two files, then start Bin64\Crysis.exe. That is the GOG release's setup, and the whole mod works with it.
 
 CryMP's client (the community's multiplayer client, https://github.com/crymp-net/crymp-client; v27 tested)
 works from v1.0.2: install the mod the same way and start CryMP-Client64.exe. Everything works as with the game's
@@ -27,13 +40,13 @@ Choose an installation
 ----------------------
 Archive with Ultimate ASI Loader:
   If the game has no ASI loader, extract the archive into the Crysis folder (the one that contains Bin32, Bin64
-  and Game), or copy its Bin32 and Bin64 folders there. Each of the two gets version.dll, optiperf.asi and
-  optiperf.ini; nothing is overwritten. The bundled version.dll is Ultimate ASI Loader @UAL_VERSION@ (x86 in
-  Bin32, x64 in Bin64).
+  and Game), or copy its Bin32 and Bin64 folders there. Each of the two gets version.dll, version.ini,
+  optiperf.asi and optiperf.ini; nothing is overwritten. The bundled version.dll is Ultimate ASI Loader
+  @UAL_VERSION@ (x86 in Bin32, x64 in Bin64); version.ini holds its one setting (see the Steam release above).
 
   If the game already has an ASI loader, do not overwrite it: copy only optiperf.asi and optiperf.ini into Bin32
-  and Bin64. If another mod's version.dll is not an ASI loader, rename this one to winmm.dll instead (both names
-  work).
+  and Bin64. If another mod's version.dll is not an ASI loader, rename this one to winmm.dll instead, and
+  version.ini to winmm.ini (both names work).
 
 Plugin-only archive:
   Requires an ASI loader already installed in Bin32 and Bin64 (for example Ultimate ASI Loader as version.dll or
@@ -46,8 +59,9 @@ For either installation:
 1. Close Crysis before copying files.
 2. Start the game as usual (GOG Galaxy, Steam or Crysis.exe, or CryMP's CryMP-Client64.exe). The render thread and
    the worker threads need the 64-bit game with DX10. GOG Galaxy's Play button starts the 32-bit DX9 game: choose
-   "Crysis x64 DX10" from its launch options instead. The 32-bit game and DX9 get the particle fix and the
-   allocator only.
+   "Crysis x64 DX10" from its launch options instead. On Steam, "Play Crysis" starts the 32-bit game too; the
+   Steam release's 64-bit game needs C1-Launcher (see Supported game builds). The 32-bit game and DX9 get the
+   particle fix and the allocator only.
 
 Usage
 -----
@@ -86,7 +100,8 @@ fast the game's own code runs, and on which thread.
 Diagnostics
 -----------
 The plugin writes optiperf.log beside optiperf.asi: what was patched, why a part stayed off, and, if the game
-crashes or shows an error, where (with the engine's call chain). Check it if the mod doesn't seem to work. With
+crashes or shows an error, where (with the engine's call chain). Check it if the mod doesn't seem to work; if
+there is no optiperf.log at all, the loader didn't load the plugin (with the Steam release: version.ini). With
 any game it should say "particle batch fix installed" and "allocator replaced by mimalloc"; with the 64-bit game
 in DX10 also "flush thread: overlap" and, once a level is running, "the outer flush runs on a worker", "the main
 thread on core", "particle update: mode=on" and "anim update: mode=on". Under CryMP's client the allocator's line
@@ -99,7 +114,8 @@ Close the game and remove optiperf.asi and optiperf.ini from Bin32 and Bin64. Th
 (and optiperf_frames.csv, if you turned the frame log on) may also be removed.
 
 Do not remove version.dll if it existed before this mod or if another plugin depends on it. Remove the bundled
-loader only when you installed that exact file for this mod and no other ASI plugin needs it.
+loader (version.dll and version.ini) only when you installed that exact file for this mod and no other ASI plugin
+needs it.
 
 Third-party components
 ----------------------
