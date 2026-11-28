@@ -6,7 +6,8 @@
       THIRD-PARTY-NOTICES.txt (the libraries linked into the plugin) and SHA256SUMS.txt (the payload's hashes), for
       a game that already has an ASI loader;
     Crysis-MTO-v<version>-with-Ultimate-ASI-Loader-<loader version>.zip: the same plus the pinned loader (as
-      version.dll in both folders) and its notice.
+      version.dll in both folders), its settings (version.ini, from src\dist: the plugins loaded from its DllMain,
+      which the Steam release's own launchers need) and its notice.
   Existing release archives are never overwritten.
 
   Ultimate ASI Loader is downloaded from its GitHub release at a pinned version and checked against SHA-256 digests
@@ -103,7 +104,10 @@ function New-ReleaseArchive([string]$Name, [string]$Stage, [bool]$IncludeLoader)
         New-Item -ItemType Directory -Force $bin | Out-Null
         $out = Join-Path $root "build\release\$a"
         Copy-Item (Join-Path $out 'optiperf.asi'), (Join-Path $out 'optiperf.ini') $bin
-        if ($IncludeLoader) { Copy-Item $loaderDll[$a] (Join-Path $bin 'version.dll') }
+        if ($IncludeLoader) {
+            Copy-Item $loaderDll[$a] (Join-Path $bin 'version.dll')
+            Write-Text (Join-Path $bin 'version.ini') (Get-Content (Join-Path $root 'src\dist\version.ini') -Raw) 'Ascii'
+        }
     }
     $readme = (Get-Content (Join-Path $root 'src\dist\README.txt') -Raw).Replace('@VERSION@', $Version).Replace('@UAL_VERSION@', $UalVersion)
     Write-Text (Join-Path $Stage 'README.txt') $readme 'UTF8'
